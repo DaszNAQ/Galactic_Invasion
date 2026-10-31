@@ -1,0 +1,196 @@
+/* NEO COSMIC COMMAND — Gameplay HUD */
+.hud {
+    position: absolute;
+    left: 0;
+    right: 0;
+    z-index: 3;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    pointer-events: none;
+    padding: 0 2.2cqw;
+}
+.hud-top {
+    top: 1.6cqw;
+    min-height: 7.4cqw;
+    gap: 1.1cqw;
+}
+.hud-bottom {
+    bottom: 1.1cqw;
+    min-height: 5.8cqw;
+    gap: 1.5cqw;
+    padding-top: 1.2cqw;
+    background: linear-gradient(to top, rgba(4, 8, 22, 0.90), rgba(4, 8, 22, 0));
+}
+
+.metric {
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    min-width: 28%;
+    min-height: 6.4cqw;
+    padding: 0.9cqw 1.5cqw;
+    line-height: 1;
+    border: 1px solid rgba(101, 178, 218, 0.18);
+    border-radius: 6px;
+    background: linear-gradient(145deg, rgba(13, 26, 52, 0.77), rgba(5, 10, 26, 0.70));
+    box-shadow: inset 0 1px 0 rgba(220, 240, 255, 0.045), 0 5px 18px rgba(0, 0, 0, 0.16);
+    backdrop-filter: blur(8px);
+}
+.metric-center { align-items: center; text-align: center; }
+.metric-right { align-items: flex-end; text-align: right; }
+.label {
+    font-size: clamp(8px, 1.45cqw, 11px);
+    letter-spacing: 0.19em;
+    color: var(--nebula-mist);
+    font-family: var(--font-mono);
+    font-weight: 600;
+}
+.value {
+    margin-top: 0.7cqw;
+    font-family: var(--font-mono);
+    font-weight: 700;
+    font-size: clamp(14px, 3cqw, 25px);
+    letter-spacing: 0.06em;
+    color: var(--stellar-white);
+    font-variant-numeric: tabular-nums;
+    text-shadow: 0 0 12px rgba(70, 217, 232, 0.22);
+}
+.value-accent {
+    color: var(--quantum-cyan);
+    text-shadow: 0 0 14px rgba(70, 217, 232, 0.42);
+}
+
+.lives {
+    display: flex;
+    gap: 0.8cqw;
+    color: var(--quantum-cyan);
+    flex: 0 0 auto;
+    min-width: 12cqw;
+}
+.life { width: 3.6cqw; height: 2.7cqw; filter: drop-shadow(0 0 5px rgba(70, 217, 232, 0.55)); }
+.chips { display: flex; gap: 1cqw; flex: 1 1 auto; justify-content: center; min-width: 0; }
+.chip {
+    --p: 1;
+    position: relative;
+    display: flex;
+    align-items: center;
+    padding: 0.55cqw 1.35cqw;
+    border-radius: 4px;
+    font-size: clamp(8px, 1.35cqw, 11px);
+    font-weight: 700;
+    letter-spacing: 0.11em;
+    white-space: nowrap;
+    overflow: hidden;
+    color: var(--c);
+    border: 1px solid color-mix(in srgb, var(--c) 46%, transparent);
+    background: color-mix(in srgb, var(--c) 9%, rgba(7, 13, 31, 0.88));
+    backdrop-filter: blur(7px);
+}
+.chip b { font-family: var(--font-mono); font-size: clamp(10px, 1.9cqw, 15px); }
+.chip i {
+    position: absolute;
+    left: 0;
+    bottom: 0;
+    height: 2px;
+    width: 100%;
+    background: var(--c);
+    transform-origin: left center;
+    transform: scaleX(var(--p));
+    box-shadow: 0 0 8px var(--c);
+}
+.chip-combo { --c: var(--solar-amber); }
+.chip-rapid { --c: var(--quantum-cyan); }
+.chip-spread { --c: var(--cosmic-violet); }
+.chip-barrier { --c: var(--plasma-mint); }
+
+.tools { display: flex; gap: 0.8cqw; pointer-events: auto; flex: 0 0 auto; }
+.icon-btn {
+    width: 4.3cqw;
+    height: 4.3cqw;
+    min-width: 25px;
+    min-height: 25px;
+    display: grid;
+    place-items: center;
+    padding: 0;
+    color: var(--stellar-white);
+    background: rgba(10, 20, 43, 0.84);
+    border: 1px solid rgba(103, 181, 220, 0.28);
+    border-radius: 6px;
+    cursor: pointer;
+    transition: border-color .16s, box-shadow .2s, transform .1s, background .2s;
+}
+.icon-btn svg { width: 62%; height: 62%; }
+.icon-btn:hover, .icon-btn:focus-visible {
+    color: var(--quantum-cyan);
+    border-color: var(--quantum-cyan);
+    background: rgba(23, 50, 77, 0.9);
+    box-shadow: 0 0 16px rgba(70, 217, 232, 0.20);
+    outline: none;
+}
+.icon-btn:active { transform: scale(0.94); }
+
+.banner {
+    position: absolute;
+    left: 0;
+    right: 0;
+    top: 36%;
+    z-index: 4;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 1cqw;
+    text-align: center;
+    pointer-events: none;
+    opacity: 0;
+}
+.banner strong {
+    font-family: var(--font-display);
+    font-size: clamp(22px, 7cqw, 64px);
+    font-weight: 800;
+    letter-spacing: 0.13em;
+    background: linear-gradient(95deg, var(--quantum-cyan), var(--stellar-white) 48%, var(--cosmic-violet));
+    -webkit-background-clip: text;
+    background-clip: text;
+    color: transparent;
+    filter: drop-shadow(0 0 16px rgba(70, 217, 232, 0.34));
+}
+.banner span {
+    font-family: var(--font-mono);
+    font-size: clamp(10px, 2.3cqw, 17px);
+    letter-spacing: 0.28em;
+    color: var(--nebula-mist);
+    font-weight: 600;
+}
+.banner.show { animation: banner 1.5s cubic-bezier(.2, .7, .2, 1) both; }
+@keyframes banner {
+    0%   { opacity: 0; transform: translateY(14px) scale(.96); letter-spacing: .4em; }
+    18%  { opacity: 1; transform: none; }
+    75%  { opacity: 1; }
+    100% { opacity: 0; transform: translateY(-8px); }
+}
+
+
+@media (pointer: coarse) {
+    .hud { padding-left: max(10px, var(--safe-l)); padding-right: max(10px, var(--safe-r)); }
+    .hud-top { gap: 6px; min-height: 46px; }
+    .hud-top .metric { min-width: 0; flex: 1 1 0; min-height: 40px; padding: 6px 8px; }
+    .label { font-size: clamp(7px, 1.6cqw, 10px); letter-spacing: 0.12em; }
+    .value { margin-top: 4px; font-size: clamp(13px, 3.2cqw, 23px); }
+    .hud-bottom { min-height: 44px; gap: 7px; padding: 8px max(10px, var(--safe-r)) 0 max(10px, var(--safe-l)); }
+    .lives { min-width: 0; gap: 3px; }
+    .life { width: clamp(15px, 4cqw, 25px); height: auto; }
+    .chips { gap: 4px; justify-content: flex-start; }
+    .chip { padding: 4px 6px; font-size: clamp(7px, 1.5cqw, 10px); letter-spacing: 0.07em; }
+    .chip b { font-size: clamp(9px, 1.8cqw, 13px); }
+    .tools { gap: 6px; }
+    .icon-btn { width: clamp(36px, 9cqw, 44px); height: clamp(36px, 9cqw, 44px); min-width: 36px; min-height: 36px; }
+    .banner { top: 44%; }
+}
+
+@media (pointer: coarse) and (max-width: 520px) {
+    .hud-top { padding-left: max(8px, var(--safe-l)); padding-right: max(8px, var(--safe-r)); }
+    .hud-top .metric { padding-inline: 6px; }
+    .hud-bottom { gap: 5px; }
+    .chip-autofire b { letter-spacing: 0.04em; }
+}

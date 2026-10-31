@@ -1,9 +1,14 @@
 /* ==========================================================================
-   GALACTIC INVASION — HTML5 Canvas arcade (Vanilla JS, không thư viện)
-   Ghi chú cân bằng:
-   - Các giá trị "pixel/frame" của GDD được quy đổi sang pixel/giây bằng REF_FPS = 60.
-   - Tốc độ formation (25, 30, ...) là đơn vị cân bằng; nhân với enemy.speedScale
-     để ra pixel/giây thực tế (xem CONFIG.enemy.speedScale).
+   GALACTIC INVASION v2 — "Neon Glass"
+   HTML5 Canvas arcade, Vanilla JS, không thư viện, chạy trực tiếp từ file://
+
+   Thay đổi so với v1:
+   - Sprite vector phát sáng (supersample, cache offscreen) thay cho pixel-art.
+   - HUD / menu / pause / game over chuyển sang DOM (kính mờ, truy cập được).
+   - Điều khiển: bàn phím + cảm ứng (đa điểm).
+   - Tính năng mới: power-up (bắn nhanh / 3 tia / khiên), combo nhân điểm,
+     Top 5 điểm cao cục bộ, bật/tắt âm thanh, banner cấp độ.
+   - Logic gameplay gốc (formation, swept collision) được giữ nguyên.
    ========================================================================== */
 (() => {
     'use strict';
@@ -16,59 +21,65 @@
         canvas: { width: 700, height: 700 },
         player: {
             width: 32, height: 24, y: 625, margin: 10,
+            minY: 150,             // giới hạn bay lên (tự do 2 chiều như Chicken Invaders)
             speed: 5,              // px/frame @60FPS
-            bulletSpeed: 8,        // px/frame @60FPS
+            bulletSpeed: 11,       // px/frame @60FPS (v1: 8)
             bulletWidth: 3, bulletHeight: 12,
-            cooldown: 250,         // ms
+            cooldown: 170,         // ms (v1: 250)
+            maxBullets: 3,         // đạn tối đa trên màn hình (v1: 1)
+            rapidCooldown: 85,     // ms (power-up bắn nhanh)
+            rapidMaxBullets: 6,
+            spreadAngleVx: 150,    // px/s lệch ngang của tia bên (power-up 3 tia)
             lives: 3,
             respawnDelay: 1000,    // ms
             invulnerable: 1500     // ms sau khi hồi sinh
         },
         enemy: {
             width: 32, height: 24,
-            cellW: 44, cellH: 34,  // khoảng cách ô lưới formation
+            cellW: 44, cellH: 34,
             startY: 80, wallMargin: 12,
             dropDistance: 18,
             baseSpeed: 25, speedPerLevel: 5, speedPerKill: 0.5,
-            speedScale: 2.2,       // quy đổi đơn vị cân bằng -> px/giây
-            bullet: { width: 4, height: 10, speed: 4 },   // speed: px/frame @60FPS
-            fireMin: 700, fireMax: 1800,                  // ms
+            speedScale: 2.2,
+            bullet: { width: 4, height: 10, speed: 4 },
+            fireMin: 700, fireMax: 1800,
             baseMaxBullets: 3, maxBulletsCap: 6,
-            aimChance: 0.35        // xác suất chọn enemy gần người chơi nhất
+            aimChance: 0.35
         },
         levels: [
             null,
             { rows: 5, cols: 11 }, { rows: 5, cols: 11 }, { rows: 5, cols: 11 },
             { rows: 5, cols: 12 }, { rows: 6, cols: 12 }, { rows: 6, cols: 13 }
         ],
-        shield: {
-            count: 4, hp: 20, cell: 5, y: 510,
-            // mẫu bunker 14 x 8 cell = 70 x 40 px
-            shape: [
-                '00011111111000',
-                '00111111111100',
-                '01111111111110',
-                '11111111111111',
-                '11111111111111',
-                '11111111111111',
-                '11111000011111',
-                '11110000001111'
-            ]
+        powerup: {
+            dropChance: 0.10, scoutBonus: 0.08, fallSpeed: 95, size: 26, maxOnScreen: 2,
+            types: {
+                rapid:   { color: '#22d3ee', letter: 'R', duration: 8,  label: 'BẮN NHANH', weight: 4 },
+                spread:  { color: '#e879f9', letter: '3', duration: 8,  label: '3 TIA',     weight: 4 },
+                barrier: { color: '#4ade80', letter: 'B', duration: 12, label: 'KHIÊN',     weight: 3 }
+            }
         },
+        combo: { window: 1.4, killsPerStep: 4, maxMult: 5 },
         score: { levelBonus: 500 },
-        timing: { levelCompleteDelay: 1500 },
+        timing: { levelCompleteDelay: 1500, restartLock: 0.8 },
         fx: {
             particleMin: 8, particleMax: 15,
             particleLifeMin: 0.3, particleLifeMax: 0.5,
             maxParticles: 400,
-            starCount: 90
+            starCount: 110
         },
-        storageKey: 'galactic_invasion_highscore'
+        storage: {
+            legacyHigh: 'galactic_invasion_highscore',
+            scores: 'galactic_invasion_scores_v2',
+            mute: 'galactic_invasion_mute'
+        },
+        topN: 5
     };
 
     const W = CONFIG.canvas.width;
     const H = CONFIG.canvas.height;
     const REF = CONFIG.refFps;
+    const REDUCE_MOTION = !!(window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches);
 
     const STATE = {
         MENU: 'MENU', PLAYING: 'PLAYING', PLAYER_HIT: 'PLAYER_HIT',
@@ -76,14 +87,14 @@
     };
 
     const ENEMY_TYPES = {
-        scout:   { key: 'scout',   color: '#FF2020', score: 30, hp: 1 },
-        soldier: { key: 'soldier', color: '#20FF40', score: 20, hp: 1 },
-        grunt:   { key: 'grunt',   color: '#2090FF', score: 10, hp: 1 }
+        scout:   { key: 'scout',   color: '#ff4d6d', score: 30, hp: 1 },
+        soldier: { key: 'soldier', color: '#3dff9a', score: 20, hp: 1 },
+        grunt:   { key: 'grunt',   color: '#4da3ff', score: 10, hp: 1 }
     };
 
     const COLORS = {
-        player: '#39FF14', playerAccent: '#CFFFFF', ui: '#FFFFFF',
-        cyan: '#19E6FF', special: '#FF20FF'
+        player: '#22d3ee', ui: '#e8f1ff', cyan: '#22d3ee',
+        magenta: '#e879f9', amber: '#fbbf24', green: '#4ade80'
     };
 
     /* ======================================================================
@@ -98,27 +109,56 @@
         return a.x < b.x + b.w && a.x + a.w > b.x && a.y < b.y + b.h && a.y + a.h > b.y;
     }
 
-    // Rect quét (swept) của viên đạn trong frame này để tránh xuyên qua vật thể mỏng.
+    function hexToRgb(hex) {
+        const n = parseInt(hex.slice(1), 16);
+        return [(n >> 16) & 255, (n >> 8) & 255, n & 255];
+    }
+    function rgba(hex, a) {
+        const [r, g, b] = hexToRgb(hex);
+        return 'rgba(' + r + ',' + g + ',' + b + ',' + a + ')';
+    }
+
+    // Rect quét (swept) của viên đạn trong frame này (cả hai trục) để không xuyên vật thể mỏng.
     const SWEPT = { x: 0, y: 0, w: 0, h: 0 };
     function sweptRect(b) {
-        const top = Math.min(b.y, b.prevY);
-        const bottom = Math.max(b.y, b.prevY) + b.h;
-        SWEPT.x = b.x; SWEPT.y = top; SWEPT.w = b.w; SWEPT.h = bottom - top;
+        const x0 = Math.min(b.x, b.prevX), x1 = Math.max(b.x, b.prevX) + b.w;
+        const y0 = Math.min(b.y, b.prevY), y1 = Math.max(b.y, b.prevY) + b.h;
+        SWEPT.x = x0; SWEPT.y = y0; SWEPT.w = x1 - x0; SWEPT.h = y1 - y0;
         return SWEPT;
     }
 
     /* ======================================================================
-       STORAGE (high score)
+       STORAGE (an toàn khi localStorage bị chặn)
        ====================================================================== */
-    const HighScore = {
+    const Store = {
+        get(k) { try { return localStorage.getItem(k); } catch (e) { return null; } },
+        set(k, v) { try { localStorage.setItem(k, String(v)); } catch (e) { /* bỏ qua */ } }
+    };
+
+    const Scores = {
+        list: [],
         load() {
-            try {
-                const v = parseInt(localStorage.getItem(CONFIG.storageKey), 10);
-                return Number.isFinite(v) && v > 0 ? v : 0;
-            } catch (e) { return 0; }
+            let l = [];
+            try { l = JSON.parse(Store.get(CONFIG.storage.scores) || '[]'); } catch (e) { l = []; }
+            l = Array.isArray(l) ? l.filter((n) => Number.isFinite(n) && n > 0) : [];
+            if (!l.length) {   // chuyển dữ liệu từ v1
+                const old = parseInt(Store.get(CONFIG.storage.legacyHigh), 10);
+                if (Number.isFinite(old) && old > 0) l = [old];
+            }
+            this.list = l.sort((a, b) => b - a).slice(0, CONFIG.topN);
         },
-        save(v) {
-            try { localStorage.setItem(CONFIG.storageKey, String(v)); } catch (e) { /* bỏ qua */ }
+        best() { return this.list[0] || 0; },
+        // Trả về hạng (0-based) của điểm vừa nộp, hoặc -1 nếu không vào top.
+        submit(score) {
+            score = Math.floor(score);
+            if (score <= 0) return -1;
+            this.list.push(score);
+            this.list.sort((a, b) => b - a);
+            const rank = this.list.indexOf(score);
+            this.list.length = Math.min(this.list.length, CONFIG.topN);
+            Store.set(CONFIG.storage.scores, JSON.stringify(this.list));
+            Store.set(CONFIG.storage.legacyHigh, this.best());   // giữ tương thích v1
+            return rank < CONFIG.topN ? rank : -1;
         }
     };
 
@@ -127,15 +167,18 @@
        ====================================================================== */
     const Game = {
         state: STATE.MENU,
-        prevState: STATE.MENU,   // state trước khi pause
+        prevState: STATE.MENU,
         score: 0,
         hi: 0,
         newHigh: false,
+        submitted: false,
         level: 1,
         lives: CONFIG.player.lives,
-        time: 0,                 // đồng hồ game (giây), dừng khi pause
+        time: 0,
         stateTimer: 0,
-        enemyFireIn: 1
+        restartLock: 0,
+        enemyFireIn: 1,
+        menuBaseX: 0
     };
 
     /* ======================================================================
@@ -143,6 +186,7 @@
        ====================================================================== */
     const Sound = {
         ctx: null, master: null, noiseBuf: null, ok: true,
+        muted: Store.get(CONFIG.storage.mute) === '1',
 
         init() {
             if (!this.ok) return;
@@ -152,7 +196,7 @@
                     if (!AC) { this.ok = false; return; }
                     this.ctx = new AC();
                     this.master = this.ctx.createGain();
-                    this.master.gain.value = 0.22;
+                    this.master.gain.value = this.muted ? 0 : 0.22;
                     this.master.connect(this.ctx.destination);
                     const len = Math.floor(this.ctx.sampleRate * 0.8);
                     this.noiseBuf = this.ctx.createBuffer(1, len, this.ctx.sampleRate);
@@ -163,7 +207,13 @@
             } catch (e) { this.ok = false; }
         },
 
-        ready() { return this.ok && this.ctx && this.ctx.state === 'running'; },
+        setMuted(m) {
+            this.muted = m;
+            Store.set(CONFIG.storage.mute, m ? '1' : '0');
+            if (this.master) this.master.gain.value = m ? 0 : 0.22;
+        },
+
+        ready() { return this.ok && !this.muted && this.ctx && this.ctx.state === 'running'; },
 
         tone(freq, freqEnd, dur, type, vol, delay = 0) {
             if (!this.ready()) return;
@@ -198,124 +248,255 @@
             } catch (e) { /* bỏ qua lỗi audio */ }
         },
 
-        shoot()         { this.tone(900, 200, 0.12, 'square', 0.32); },
-        enemyHit()      { this.tone(660, 990, 0.06, 'square', 0.22); },
+        shoot()         { this.tone(900, 200, 0.12, 'square', 0.28); },
+        enemyHit()      { this.tone(660, 990, 0.06, 'square', 0.18); },
         enemyDestroy()  { this.noise(0.25, 0.45, 2400, 200); this.tone(220, 50, 0.2, 'sawtooth', 0.22); },
         playerHit()     { this.noise(0.6, 0.7, 900, 60); this.tone(110, 30, 0.5, 'sawtooth', 0.4); },
-        shieldHit()     { this.tone(160, 90, 0.08, 'square', 0.22); this.noise(0.07, 0.25, 1500, 500); },
+        powerUp()       { [660, 880, 1320].forEach((f, i) => this.tone(f, f * 1.02, 0.09, 'triangle', 0.3, i * 0.07)); },
+        barrierBreak()  { this.tone(1200, 200, 0.25, 'triangle', 0.35); this.noise(0.18, 0.3, 4000, 400); },
         levelComplete() { [523, 659, 784, 1047].forEach((f, i) => this.tone(f, f, 0.14, 'square', 0.25, i * 0.12)); },
         gameOver()      { [392, 330, 262, 196].forEach((f, i) => this.tone(f, f * 0.97, 0.22, 'triangle', 0.35, i * 0.2)); }
     };
 
     /* ======================================================================
-       SPRITES (pixel art vẽ bằng code, cache vào canvas offscreen)
+       SPRITES — vector neon, vẽ 1 lần vào canvas offscreen (supersample)
        ====================================================================== */
-    // Mỗi hàng là nửa trái (8 ký tự), được phản chiếu thành sprite 16 cột x 12 hàng.
-    const SPRITE_DATA = {
-        player: [
-            '00000001', '00000001', '00000011', '00000011', '00000122', '01000122',
-            '01101111', '01111111', '01111111', '11111111', '11111001', '11100000'
-        ],
-        scout: [[
-            '00000001', '00000011', '00000111', '00001111', '00011111', '00011211',
-            '00011111', '00001111', '00000110', '00001001', '00010010', '00100001'
-        ], [
-            '00000001', '00000011', '00000111', '00001111', '00011111', '00011211',
-            '00011111', '00001111', '00000110', '00010001', '00100010', '00010001'
-        ]],
-        soldier: [[
-            '00100000', '00010001', '00011111', '00111111', '01121111', '11111111',
-            '11111111', '10111111', '10100000', '10100111', '00011000', '00000000'
-        ], [
-            '00100010', '10010001', '10011111', '10111111', '11121111', '11111111',
-            '01111111', '00111111', '00100000', '01000111', '10000000', '00000000'
-        ]],
-        grunt: [[
-            '00000111', '00011111', '00111111', '01111111', '11112211', '11111111',
-            '11111111', '00011100', '00110011', '01100000', '11000011', '00000000'
-        ], [
-            '00000111', '00011111', '00111111', '01111111', '11112211', '11111111',
-            '11111111', '00011100', '01100011', '11000000', '00011000', '00000000'
-        ]]
-    };
-    const HEART_DATA = ['0110110', '1111111', '1111111', '0111110', '0011100', '0001000'];
+    const SS = 3;      // hệ số supersample
+    const PAD = 10;    // viền để chứa glow
 
-    function buildSprite(rows, colors, scale, mirror) {
-        const cols = mirror ? rows[0].length * 2 : rows[0].length;
+    function makeSprite(w, h, draw) {
         const cv = document.createElement('canvas');
-        cv.width = cols * scale;
-        cv.height = rows.length * scale;
+        cv.width = (w + PAD * 2) * SS;
+        cv.height = (h + PAD * 2) * SS;
         const c = cv.getContext('2d');
-        rows.forEach((row, y) => {
-            const full = mirror ? row + row.split('').reverse().join('') : row;
-            for (let x = 0; x < full.length; x++) {
-                const ch = full[x];
-                if (ch === '0') continue;
-                c.fillStyle = colors[ch] || colors['1'];
-                c.fillRect(x * scale, y * scale, scale, scale);
+        c.scale(SS, SS);
+        c.translate(PAD, PAD);
+        draw(c);
+        return { cv, w, h, dw: w + PAD * 2, dh: h + PAD * 2 };
+    }
+
+    function blit(ctx, s, x, y) {
+        ctx.drawImage(s.cv, x - PAD, y - PAD, s.dw, s.dh);
+    }
+
+    function neon(c, color, fillA, lw, blur) {
+        c.lineJoin = 'round'; c.lineCap = 'round';
+        c.shadowColor = color; c.shadowBlur = blur * SS;
+        c.lineWidth = lw; c.strokeStyle = color;
+        c.fillStyle = rgba(color, fillA);
+    }
+
+    function fillStroke(c) { c.fill(); c.stroke(); }
+
+    const ENEMY_DRAW = {
+        // Tiêm kích tam giác
+        scout(c, f, col) {
+            c.save();
+            c.beginPath();
+            c.moveTo(16, 1);
+            c.lineTo(f ? 30.5 : 29, f ? 21 : 19);
+            c.lineTo(22, 16); c.lineTo(16, 22); c.lineTo(10, 16);
+            c.lineTo(f ? 1.5 : 3, f ? 21 : 19);
+            c.closePath();
+            neon(c, col, 0.22, 1.7, 7);
+            fillStroke(c);
+            c.shadowBlur = 0;
+            c.strokeStyle = 'rgba(255,255,255,.55)'; c.lineWidth = 1;
+            c.beginPath(); c.moveTo(16, 5); c.lineTo(16, 15); c.stroke();
+            c.fillStyle = '#fff';
+            c.beginPath(); c.arc(16, 11, 1.8, 0, Math.PI * 2); c.fill();
+            c.restore();
+        },
+        // Chiến binh lục giác có càng
+        soldier(c, f, col) {
+            c.save();
+            c.beginPath();
+            c.moveTo(9, 4); c.lineTo(23, 4); c.lineTo(29, 12);
+            c.lineTo(23, 20); c.lineTo(9, 20); c.lineTo(3, 12);
+            c.closePath();
+            neon(c, col, 0.2, 1.7, 7);
+            fillStroke(c);
+            c.beginPath();
+            c.moveTo(3, 12); c.lineTo(0.5, f ? 5 : 15);
+            c.moveTo(29, 12); c.lineTo(31.5, f ? 5 : 15);
+            c.stroke();
+            c.shadowBlur = 0;
+            c.fillStyle = 'rgba(255,255,255,.9)';
+            c.fillRect(10.5, 10, 11, 3.4);
+            c.restore();
+        },
+        // Đĩa bay mái vòm có chân
+        grunt(c, f, col) {
+            c.save();
+            c.beginPath();
+            c.arc(16, 12, 9.5, Math.PI, 0);
+            c.closePath();
+            neon(c, col, 0.2, 1.7, 7);
+            fillStroke(c);
+            c.beginPath();
+            c.moveTo(4, 12.5); c.lineTo(28, 12.5); c.lineTo(24.5, 17); c.lineTo(7.5, 17); c.closePath();
+            fillStroke(c);
+            c.beginPath();
+            if (f) {
+                c.moveTo(10, 17); c.lineTo(6, 23); c.moveTo(22, 17); c.lineTo(26, 23);
+                c.moveTo(15, 17); c.lineTo(14, 22.5); c.moveTo(17, 17); c.lineTo(18, 22.5);
+            } else {
+                c.moveTo(10, 17); c.lineTo(11.5, 23); c.moveTo(22, 17); c.lineTo(20.5, 23);
+                c.moveTo(15, 17); c.lineTo(16, 22.5); c.moveTo(17, 17); c.lineTo(16, 22.5);
             }
-        });
+            c.stroke();
+            c.shadowBlur = 0;
+            c.fillStyle = '#fff';
+            c.beginPath(); c.arc(12.2, 9, 1.7, 0, Math.PI * 2); c.arc(19.8, 9, 1.7, 0, Math.PI * 2); c.fill();
+            c.restore();
+        }
+    };
+
+    function drawPlayerShip(c) {
+        c.save();
+        c.beginPath();
+        c.moveTo(16, 1); c.lineTo(21, 10); c.lineTo(30, 18); c.lineTo(30, 22);
+        c.lineTo(22, 20); c.lineTo(19, 23); c.lineTo(13, 23); c.lineTo(10, 20);
+        c.lineTo(2, 22); c.lineTo(2, 18); c.lineTo(11, 10);
+        c.closePath();
+        neon(c, COLORS.player, 0.2, 1.8, 8);
+        fillStroke(c);
+        c.shadowBlur = 0;
+        c.strokeStyle = 'rgba(255,255,255,.35)'; c.lineWidth = 1;
+        c.beginPath(); c.moveTo(11, 10); c.lineTo(11, 19); c.moveTo(21, 10); c.lineTo(21, 19); c.stroke();
+        c.fillStyle = 'rgba(255,255,255,.92)';
+        c.beginPath(); c.moveTo(16, 6); c.lineTo(18.6, 12.5); c.lineTo(16, 15); c.lineTo(13.4, 12.5); c.closePath(); c.fill();
+        c.restore();
+    }
+
+    function drawCapsule(c, def) {
+        const s = CONFIG.powerup.size, r = s / 2;
+        c.save();
+        c.beginPath();
+        for (let i = 0; i < 6; i++) {
+            const a = Math.PI / 6 + i * Math.PI / 3;
+            const px = r + Math.cos(a) * (r - 1.5), py = r + Math.sin(a) * (r - 1.5);
+            if (i === 0) c.moveTo(px, py); else c.lineTo(px, py);
+        }
+        c.closePath();
+        neon(c, def.color, 0.28, 1.8, 8);
+        fillStroke(c);
+        c.shadowBlur = 0;
+        c.fillStyle = '#fff';
+        c.font = '700 13px "Orbitron", "Courier New", monospace';
+        c.textAlign = 'center'; c.textBaseline = 'middle';
+        c.fillText(def.letter, r, r + 0.5);
+        c.restore();
+    }
+
+    function makeGlow(color) {
+        const s = 40, cv = document.createElement('canvas');
+        cv.width = cv.height = s;
+        const c = cv.getContext('2d');
+        const g = c.createRadialGradient(s / 2, s / 2, 0, s / 2, s / 2, s / 2);
+        g.addColorStop(0, rgba(color, 0.85));
+        g.addColorStop(0.35, rgba(color, 0.28));
+        g.addColorStop(1, rgba(color, 0));
+        c.fillStyle = g; c.fillRect(0, 0, s, s);
         return cv;
+    }
+    const glowCache = {};
+    function glow(color) { return glowCache[color] || (glowCache[color] = makeGlow(color)); }
+    function drawGlow(ctx, color, x, y, size) {
+        ctx.drawImage(glow(color), x - size / 2, y - size / 2, size, size);
     }
 
     const Sprites = {
-        player: null, heart: null,
-        enemy: { scout: [], soldier: [], grunt: [] },
+        player: null, capsule: {}, enemy: { scout: [], soldier: [], grunt: [] },
         build() {
-            this.player = buildSprite(SPRITE_DATA.player,
-                { '1': COLORS.player, '2': COLORS.playerAccent }, 2, true);
-            this.heart = buildSprite(HEART_DATA, { '1': '#FF3050' }, 3, false);
+            this.player = makeSprite(CONFIG.player.width, CONFIG.player.height, drawPlayerShip);
             Object.keys(ENEMY_TYPES).forEach((k) => {
-                const color = ENEMY_TYPES[k].color;
-                this.enemy[k] = SPRITE_DATA[k].map((rows) =>
-                    buildSprite(rows, { '1': color, '2': '#FFFFFF' }, 2, true));
+                const col = ENEMY_TYPES[k].color;
+                this.enemy[k] = [0, 1].map((f) =>
+                    makeSprite(CONFIG.enemy.width, CONFIG.enemy.height, (c) => ENEMY_DRAW[k](c, f, col)));
+            });
+            Object.keys(CONFIG.powerup.types).forEach((k) => {
+                const def = CONFIG.powerup.types[k];
+                this.capsule[k] = makeSprite(CONFIG.powerup.size, CONFIG.powerup.size, (c) => drawCapsule(c, def));
+            });
+        },
+        // Vẽ icon kẻ địch vào các <canvas> trong menu
+        paintLegend() {
+            document.querySelectorAll('canvas[data-enemy]').forEach((el) => {
+                const s = this.enemy[el.dataset.enemy][0];
+                el.width = s.cv.width; el.height = s.cv.height;
+                el.getContext('2d').drawImage(s.cv, 0, 0);
             });
         }
     };
 
     /* ======================================================================
-       INPUT (trừu tượng hoá để dễ thêm touch sau này)
+       INPUT: bàn phím + cảm ứng
        ====================================================================== */
     const Input = {
         keys: new Set(),
-        left()  { return this.keys.has('ArrowLeft') || this.keys.has('KeyA'); },
-        right() { return this.keys.has('ArrowRight') || this.keys.has('KeyD'); },
-        fire()  { return this.keys.has('Space'); },
+        touch: { left: false, right: false, up: false, down: false, fire: false },
+
+        left()  { return this.keys.has('ArrowLeft') || this.keys.has('KeyA') || this.touch.left; },
+        right() { return this.keys.has('ArrowRight') || this.keys.has('KeyD') || this.touch.right; },
+        up()    { return this.keys.has('ArrowUp') || this.keys.has('KeyW') || this.touch.up; },
+        down()  { return this.keys.has('ArrowDown') || this.keys.has('KeyS') || this.touch.down; },
+        fire()  { return this.keys.has('Space') || this.touch.fire; },
 
         init() {
             const prevent = new Set(['Space', 'ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown']);
             window.addEventListener('keydown', (e) => {
+                if (e.ctrlKey || e.metaKey || e.altKey) return;
                 if (prevent.has(e.code)) e.preventDefault();
-                Sound.init(); // kích hoạt audio sau tương tác người dùng
+                Sound.init();
                 if (!e.repeat) {
                     if (e.code === 'Enter' || e.code === 'NumpadEnter') onEnter();
-                    else if (e.code === 'KeyP') togglePause();
+                    else if (e.code === 'KeyP' || e.code === 'Escape') togglePause();
+                    else if (e.code === 'KeyM') toggleMute();
                 }
                 this.keys.add(e.code);
             });
             window.addEventListener('keyup', (e) => { this.keys.delete(e.code); });
             window.addEventListener('blur', () => {
                 this.keys.clear();
+                this.touch.left = this.touch.right = this.touch.up = this.touch.down = this.touch.fire = false;
                 if (Game.state === STATE.PLAYING) togglePause();
             });
             document.addEventListener('visibilitychange', () => {
                 if (document.hidden && Game.state === STATE.PLAYING) togglePause();
             });
-        }
+
+            // Nút cảm ứng giữ-để-điều-khiển (đa điểm nhờ Pointer Events)
+            const hold = (id, key) => {
+                const el = document.getElementById(id);
+                if (!el) return;
+                const down = (e) => {
+                    e.preventDefault();
+                    Sound.init();
+                    this.touch[key] = true;
+                    el.classList.add('down');
+                    try { el.setPointerCapture(e.pointerId); } catch (err) { /* bỏ qua */ }
+                };
+                const up = () => { this.touch[key] = false; el.classList.remove('down'); };
+                el.addEventListener('pointerdown', down);
+                ['pointerup', 'pointercancel', 'lostpointercapture'].forEach((t) => el.addEventListener(t, up));
+                el.addEventListener('contextmenu', (e) => e.preventDefault());
+            };
+            hold('t-left', 'left'); hold('t-right', 'right'); hold('t-up', 'up'); hold('t-down', 'down'); hold('t-fire', 'fire');
+        },
+
     };
 
     /* ======================================================================
-       EFFECTS: particles, popups, shake, flash, stars
+       EFFECTS: particles, rings, popups, shake, flash, parallax stars
        ====================================================================== */
     const FX = {
-        particles: [],
-        popups: [],
+        particles: [], popups: [], rings: [],
         shakeTime: 0, shakeDur: 0.0001, shakeMag: 0,
         flashAlpha: 0, flashColor: '#FFFFFF', flashDecay: 2,
 
         reset() {
-            this.particles.length = 0;
-            this.popups.length = 0;
+            this.particles.length = 0; this.popups.length = 0; this.rings.length = 0;
             this.shakeTime = 0; this.flashAlpha = 0;
         },
 
@@ -335,18 +516,25 @@
 
         explosion(x, y, colors, count) {
             this.burst(x, y, colors, count || randInt(CONFIG.fx.particleMin, CONFIG.fx.particleMax), 40, 190);
+            this.ring(x, y, colors[0], 34, 0.32);
+        },
+
+        ring(x, y, color, maxR, life) {
+            if (this.rings.length < 24) this.rings.push({ x, y, color, maxR, life, maxLife: life });
         },
 
         popup(x, y, text, color) {
-            this.popups.push({ x, y, text, color, life: 0.7, maxLife: 0.7 });
+            if (this.popups.length < 30) this.popups.push({ x, y, text, color, life: 0.8, maxLife: 0.8 });
         },
 
         shake(mag, dur) {
+            if (REDUCE_MOTION) return;
             this.shakeMag = mag; this.shakeDur = dur; this.shakeTime = dur;
         },
 
         flash(color, alpha, decay) {
-            this.flashColor = color; this.flashAlpha = alpha; this.flashDecay = decay || 2.5;
+            this.flashColor = color; this.flashAlpha = REDUCE_MOTION ? alpha * 0.3 : alpha;
+            this.flashDecay = decay || 2.5;
         },
 
         update(dt) {
@@ -361,8 +549,13 @@
             const pp = this.popups;
             for (let i = pp.length - 1; i >= 0; i--) {
                 const p = pp[i];
-                p.life -= dt; p.y -= 30 * dt;
+                p.life -= dt; p.y -= 34 * dt;
                 if (p.life <= 0) { pp[i] = pp[pp.length - 1]; pp.pop(); }
+            }
+            const rr = this.rings;
+            for (let i = rr.length - 1; i >= 0; i--) {
+                rr[i].life -= dt;
+                if (rr[i].life <= 0) { rr[i] = rr[rr.length - 1]; rr.pop(); }
             }
             if (this.shakeTime > 0) this.shakeTime -= dt;
             if (this.flashAlpha > 0) this.flashAlpha = Math.max(0, this.flashAlpha - this.flashDecay * dt);
@@ -380,24 +573,27 @@
         init() {
             this.list.length = 0;
             for (let i = 0; i < CONFIG.fx.starCount; i++) {
+                const z = [0.35, 0.65, 1][i % 3];   // 3 lớp parallax
                 this.list.push({
-                    x: rand(0, W), y: rand(0, H),
-                    size: Math.random() < 0.8 ? 1 : 2,
-                    v: rand(6, 28), b: rand(0.25, 0.9), t: rand(0, 6.28)
+                    x: rand(-40, W + 40), y: rand(0, H), z,
+                    size: z > 0.9 ? 2 : 1,
+                    v: 8 + z * 34, b: rand(0.25, 0.85) * (0.5 + z * 0.5), t: rand(0, 6.28),
+                    tint: Math.random() < 0.18 ? '170,210,255' : (Math.random() < 0.1 ? '255,190,240' : '255,255,255')
                 });
             }
         },
         update(dt) {
             for (const s of this.list) {
                 s.y += s.v * dt;
-                if (s.y > H) { s.y = 0; s.x = rand(0, W); }
+                if (s.y > H) { s.y = 0; s.x = rand(-40, W + 40); }
             }
         },
         render(ctx) {
+            const par = (Player.x + Player.w / 2 - W / 2) * -0.05;
             for (const s of this.list) {
-                const a = s.b * (0.75 + 0.25 * Math.sin(Game.time * 2 + s.t));
-                ctx.fillStyle = 'rgba(255,255,255,' + a.toFixed(2) + ')';
-                ctx.fillRect(Math.floor(s.x), Math.floor(s.y), s.size, s.size);
+                const a = s.b * (0.7 + 0.3 * Math.sin(Game.time * 2 + s.t));
+                ctx.fillStyle = 'rgba(' + s.tint + ',' + a.toFixed(2) + ')';
+                ctx.fillRect(Math.round(s.x + par * s.z), Math.round(s.y), s.size, s.size);
             }
         }
     };
@@ -408,7 +604,7 @@
     const Player = {
         x: 0, y: CONFIG.player.y, w: CONFIG.player.width, h: CONFIG.player.height,
         lastShot: -Infinity, invuln: 0, muzzle: 0, visible: true,
-        bullet: null,
+        bullets: [],
 
         resetPosition() {
             this.x = (W - this.w) / 2;
@@ -419,14 +615,18 @@
             this.resetPosition();
             this.lastShot = -Infinity;
             this.invuln = 0; this.muzzle = 0; this.visible = true;
-            this.bullet = null;
+            this.bullets.length = 0;
         },
 
         update(dt) {
             if (Game.state === STATE.PLAYING) {
-                const dir = (Input.right() ? 1 : 0) - (Input.left() ? 1 : 0);
-                this.x += dir * CONFIG.player.speed * REF * dt;
+                const dx = (Input.right() ? 1 : 0) - (Input.left() ? 1 : 0);
+                const dy = (Input.down() ? 1 : 0) - (Input.up() ? 1 : 0);
+                const v = CONFIG.player.speed * REF * dt * (dx && dy ? Math.SQRT1_2 : 1);   // chéo không nhanh hơn
+                this.x += dx * v;
+                this.y += dy * v;
                 this.x = clamp(this.x, CONFIG.player.margin, W - this.w - CONFIG.player.margin);
+                this.y = clamp(this.y, CONFIG.player.minY, CONFIG.player.y);
                 if (Input.fire()) this.tryShoot();
                 if (this.invuln > 0) this.invuln -= dt;
             }
@@ -434,34 +634,77 @@
         },
 
         tryShoot() {
-            if (this.bullet) return;                                   // tối đa 1 đạn
-            if (Game.time - this.lastShot < CONFIG.player.cooldown / 1000) return;
             const c = CONFIG.player;
-            this.bullet = {
-                x: this.x + this.w / 2 - c.bulletWidth / 2,
-                y: this.y - c.bulletHeight, prevY: this.y - c.bulletHeight,
-                w: c.bulletWidth, h: c.bulletHeight, speed: c.bulletSpeed * REF
-            };
+            const rapid = PowerUps.active.rapid > 0, spread = PowerUps.active.spread > 0;
+            const volley = spread ? 3 : 1;
+            const cap = (rapid ? c.rapidMaxBullets : c.maxBullets) * volley;
+            if (this.bullets.length + volley > cap) return;
+            const cd = (rapid ? c.rapidCooldown : c.cooldown) / 1000;
+            if (Game.time - this.lastShot < cd) return;
+            for (let k = 0; k < volley; k++) {
+                const x = this.x + this.w / 2 - c.bulletWidth / 2;
+                const y = this.y - c.bulletHeight;
+                this.bullets.push({
+                    x, y, prevX: x, prevY: y, w: c.bulletWidth, h: c.bulletHeight,
+                    vx: volley === 3 ? (k - 1) * c.spreadAngleVx : 0,
+                    vy: -c.bulletSpeed * REF
+                });
+            }
             this.lastShot = Game.time;
-            this.muzzle = 0.06;
+            this.muzzle = 0.07;
             Sound.shoot();
         },
 
-        updateBullet(dt) {
-            const b = this.bullet;
-            if (!b) return;
-            b.prevY = b.y;
-            b.y -= b.speed * dt;
-            if (b.y + b.h < 0) this.bullet = null;
+        updateBullets(dt) {
+            const l = this.bullets;
+            for (let i = l.length - 1; i >= 0; i--) {
+                const b = l[i];
+                b.prevX = b.x; b.prevY = b.y;
+                b.x += b.vx * dt; b.y += b.vy * dt;
+                if (b.y + b.h < 0 || b.x + b.w < -10 || b.x > W + 10) l.splice(i, 1);
+            }
         },
 
         render(ctx) {
             if (!this.visible) return;
             if (this.invuln > 0 && Math.floor(Game.time * 14) % 2 === 0) return; // nhấp nháy khi bất tử
-            ctx.drawImage(Sprites.player, Math.round(this.x), Math.round(this.y));
+            const cx = this.x + this.w / 2, bottom = this.y + this.h - 1;
+
+            // Lửa động cơ
+            const len = 7 + Math.sin(Game.time * 60) * 2 + Math.random() * 2;
+            ctx.globalCompositeOperation = 'lighter';
+            const g = ctx.createLinearGradient(0, bottom, 0, bottom + len);
+            g.addColorStop(0, 'rgba(180,250,255,.95)');
+            g.addColorStop(1, 'rgba(34,211,238,0)');
+            ctx.fillStyle = g;
+            ctx.beginPath();
+            ctx.moveTo(cx - 3.2, bottom); ctx.lineTo(cx + 3.2, bottom); ctx.lineTo(cx, bottom + len);
+            ctx.fill();
+            drawGlow(ctx, COLORS.cyan, cx, bottom + 2, 22);
+            ctx.globalCompositeOperation = 'source-over';
+
+            blit(ctx, Sprites.player, this.x, this.y);
+
             if (this.muzzle > 0) {
-                ctx.fillStyle = '#FFFFFF';
-                ctx.fillRect(Math.round(this.x + this.w / 2 - 3), Math.round(this.y - 5), 6, 5);
+                ctx.globalCompositeOperation = 'lighter';
+                drawGlow(ctx, '#ffffff', cx, this.y - 2, 26);
+                ctx.globalCompositeOperation = 'source-over';
+            }
+
+            // Khiên năng lượng
+            if (PowerUps.active.barrier > 0) {
+                const t = PowerUps.active.barrier;
+                const blink = t < 2 && Math.floor(Game.time * 10) % 2 === 0;
+                if (!blink) {
+                    const cy = this.y + this.h / 2, r = 27 + Math.sin(Game.time * 6) * 1.2;
+                    ctx.fillStyle = 'rgba(74,222,128,0.10)';
+                    ctx.strokeStyle = 'rgba(74,222,128,0.85)';
+                    ctx.lineWidth = 1.6;
+                    ctx.beginPath(); ctx.arc(cx, cy, r, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
+                    ctx.globalCompositeOperation = 'lighter';
+                    drawGlow(ctx, COLORS.green, cx, cy, r * 2.6);
+                    ctx.globalCompositeOperation = 'source-over';
+                }
             }
         }
     };
@@ -502,7 +745,7 @@
             this.dir = 1;
             this.animFrame = 0; this.animAccum = 0;
             const totalW = (L.cols - 1) * E.cellW + E.width;
-            this.x = (W - totalW) / 2;       // căn giữa
+            this.x = (W - totalW) / 2;
             this.y = E.startY;
             this.layout();
         },
@@ -521,7 +764,6 @@
             return CONFIG.enemy.baseSpeed + CONFIG.enemy.speedPerLevel * (level - 1);
         },
 
-        // formationSpeed = baseSpeed + destroyedCount * 0.5 (rồi quy đổi sang px/s)
         currentSpeed() {
             const s = this.baseSpeed(Game.level) + this.destroyed * CONFIG.enemy.speedPerKill;
             return s * CONFIG.enemy.speedScale;
@@ -570,7 +812,6 @@
             if (i >= 0) this.enemies.splice(i, 1);
         },
 
-        // Enemy thấp nhất của mỗi cột là ứng viên bắn
         shooters() {
             const best = this._best;
             best.length = this.cols;
@@ -584,7 +825,7 @@
         render(ctx) {
             const f = this.animFrame;
             for (const e of this.enemies) {
-                ctx.drawImage(Sprites.enemy[e.type.key][f], Math.round(e.x), Math.round(e.y));
+                blit(ctx, Sprites.enemy[e.type.key][f], Math.round(e.x), Math.round(e.y));
             }
         }
     };
@@ -615,7 +856,6 @@
             if (!cands.length) return;
             let shooter;
             if (Math.random() < CONFIG.enemy.aimChance) {
-                // chọn enemy gần player nhất theo trục ngang để tạo áp lực công bằng
                 const px = Player.x + Player.w / 2;
                 shooter = cands[0];
                 for (const e of cands) {
@@ -626,8 +866,9 @@
             }
             const B = CONFIG.enemy.bullet;
             const speed = B.speed * (1 + Math.min(Game.level - 1, 10) * 0.03) * REF;
+            const bx = shooter.x + shooter.w / 2 - B.width / 2;
             this.list.push({
-                x: shooter.x + shooter.w / 2 - B.width / 2,
+                x: bx, prevX: bx,
                 y: shooter.y + shooter.h, prevY: shooter.y + shooter.h,
                 w: B.width, h: B.height, speed, color: shooter.type.color, dead: false
             });
@@ -654,117 +895,106 @@
 
         render(ctx) {
             for (const b of this.list) {
+                const cx = b.x + b.w / 2, cy = b.y + b.h / 2;
+                ctx.globalCompositeOperation = 'lighter';
+                drawGlow(ctx, b.color, cx, cy, 26);
+                ctx.globalCompositeOperation = 'source-over';
+                const alt = Math.floor(Game.time * 20 + b.y / 6) % 2 ? 1 : -1;   // zig-zag
                 ctx.fillStyle = b.color;
-                const alt = Math.floor(Game.time * 20 + b.y / 6) % 2 ? 1 : -1; // zig-zag
                 ctx.fillRect(Math.round(b.x), Math.round(b.y), b.w, 5);
                 ctx.fillRect(Math.round(b.x + alt), Math.round(b.y + 5), b.w, 5);
+                ctx.fillStyle = '#fff';
+                ctx.fillRect(Math.round(b.x + 1), Math.round(b.y + 2), 2, 6);
             }
         }
     };
 
     /* ======================================================================
-       SHIELDS (pixel damage)
+       POWER-UPS  (mới)
        ====================================================================== */
-    const Shields = {
-        list: [],
+    const PowerUps = {
+        drops: [],
+        active: { rapid: 0, spread: 0, barrier: 0 },
 
-        init() {
-            const S = CONFIG.shield;
-            const rows = S.shape.length, cols = S.shape[0].length;
-            this.list.length = 0;
-            for (let i = 0; i < S.count; i++) {
-                const cells = new Uint8Array(rows * cols);
-                let count = 0;
-                for (let r = 0; r < rows; r++) {
-                    for (let c = 0; c < cols; c++) {
-                        if (S.shape[r][c] === '1') { cells[r * cols + c] = 1; count++; }
-                    }
-                }
-                const w = cols * S.cell, h = rows * S.cell;
-                const cx = W * (i + 0.5) / S.count;
-                this.list.push({
-                    x: Math.round(cx - w / 2), y: S.y, w, h,
-                    rows, cols, cells, count, hp: S.hp, alive: true
-                });
-            }
+        reset() {
+            this.drops.length = 0;
+            this.active.rapid = this.active.spread = this.active.barrier = 0;
         },
 
-        top() { return CONFIG.shield.y; },
-
-        // Phá cụm cell quanh điểm va chạm
-        damageAt(s, hr, hc, goingDown) {
-            const dirR = goingDown ? 1 : -1;
-            for (let dr = -1; dr <= 1; dr++) {
-                for (let dc = -1; dc <= 1; dc++) {
-                    if ((dr === 0 && dc === 0) || Math.random() < 0.5) this.killCell(s, hr + dr, hc + dc);
-                }
-            }
-            // xuyên sâu thêm một lớp theo hướng đạn
-            if (Math.random() < 0.7) this.killCell(s, hr + dirR * 2, hc);
-            s.hp--;
-            if (s.hp <= 0 || s.count <= 0) this.destroy(s);
+        maybeDrop(enemy) {
+            const P = CONFIG.powerup;
+            if (this.drops.length >= P.maxOnScreen) return;
+            const chance = P.dropChance + (enemy.type.key === 'scout' ? P.scoutBonus : 0);
+            if (Math.random() >= chance) return;
+            const keys = Object.keys(P.types);
+            let total = 0;
+            keys.forEach((k) => { total += P.types[k].weight; });
+            let r = Math.random() * total, type = keys[0];
+            for (const k of keys) { r -= P.types[k].weight; if (r <= 0) { type = k; break; } }
+            this.drops.push({
+                type, x: enemy.x + enemy.w / 2 - P.size / 2, y: enemy.y,
+                w: P.size, h: P.size, t: rand(0, 6)
+            });
         },
 
-        killCell(s, r, c) {
-            if (r < 0 || c < 0 || r >= s.rows || c >= s.cols) return;
-            const i = r * s.cols + c;
-            if (s.cells[i]) { s.cells[i] = 0; s.count--; }
+        collect(d) {
+            const def = CONFIG.powerup.types[d.type];
+            this.active[d.type] = def.duration;
+            Sound.powerUp();
+            FX.popup(d.x + d.w / 2, d.y, def.label, def.color);
+            FX.ring(d.x + d.w / 2, d.y + d.h / 2, def.color, 40, 0.4);
+            FX.burst(d.x + d.w / 2, d.y + d.h / 2, [def.color, '#ffffff'], 10, 30, 120, 2);
+            UI.say('Nhận ' + def.label);
         },
 
-        destroy(s) {
-            s.alive = false;
-            FX.burst(s.x + s.w / 2, s.y + s.h / 2, ['#33FF55', '#C8E03A'], 14, 30, 120, 2);
+        tickTimers(dt) {
+            const a = this.active;
+            for (const k in a) if (a[k] > 0) a[k] = Math.max(0, a[k] - dt);
         },
 
-        // Kiểm tra đạn (rect quét) với 1 bunker. Trả về true nếu có va chạm.
-        hit(s, rect, goingDown) {
-            if (!s.alive || !overlap(s, rect)) return false;
-            const cs = CONFIG.shield.cell;
-            const c0 = Math.max(0, Math.floor((rect.x - s.x) / cs));
-            const c1 = Math.min(s.cols - 1, Math.floor((rect.x + rect.w - 1 - s.x) / cs));
-            const r0 = Math.max(0, Math.floor((rect.y - s.y) / cs));
-            const r1 = Math.min(s.rows - 1, Math.floor((rect.y + rect.h - 1 - s.y) / cs));
-            let hr = -1, hc = -1;
-            for (let r = r0; r <= r1; r++) {
-                for (let c = c0; c <= c1; c++) {
-                    if (!s.cells[r * s.cols + c]) continue;
-                    // đạn đi xuống chạm hàng trên cùng trước; đạn đi lên chạm hàng dưới cùng trước
-                    if (hr < 0 || (goingDown ? r < hr : r > hr)) { hr = r; hc = c; }
+        update(dt) {
+            for (let i = this.drops.length - 1; i >= 0; i--) {
+                const d = this.drops[i];
+                d.y += CONFIG.powerup.fallSpeed * dt;
+                d.t += dt;
+                if (Player.visible && Game.state === STATE.PLAYING && overlap(Player, d)) {
+                    this.collect(d); this.drops.splice(i, 1);
+                } else if (d.y > H) {
+                    this.drops.splice(i, 1);
                 }
             }
-            if (hr < 0) return false;   // đạn bay xuyên qua lỗ khuyết
-            FX.burst(s.x + hc * cs + cs / 2, s.y + hr * cs + cs / 2, ['#33FF55'], 4, 20, 90, 2);
-            this.damageAt(s, hr, hc, goingDown);
-            return true;
-        },
-
-        // Enemy chạm bunker: xoá cell bị đè
-        trample(s, e) {
-            if (!s.alive || !overlap(s, e)) return;
-            const cs = CONFIG.shield.cell;
-            for (let r = 0; r < s.rows; r++) {
-                for (let c = 0; c < s.cols; c++) {
-                    if (!s.cells[r * s.cols + c]) continue;
-                    const cell = { x: s.x + c * cs, y: s.y + r * cs, w: cs, h: cs };
-                    if (overlap(cell, e)) { s.cells[r * s.cols + c] = 0; s.count--; }
-                }
-            }
-            if (s.count <= 0) this.destroy(s);
         },
 
         render(ctx) {
-            const cs = CONFIG.shield.cell;
-            for (const s of this.list) {
-                if (!s.alive) continue;
-                ctx.fillStyle = s.hp > 10 ? '#33FF55' : (s.hp > 5 ? '#C8E03A' : '#FF9A2A');
-                for (let r = 0; r < s.rows; r++) {
-                    for (let c = 0; c < s.cols; c++) {
-                        if (s.cells[r * s.cols + c]) ctx.fillRect(s.x + c * cs, s.y + r * cs, cs, cs);
-                    }
-                }
+            for (const d of this.drops) {
+                const def = CONFIG.powerup.types[d.type];
+                const bob = Math.sin(d.t * 6) * 1.5;
+                ctx.globalCompositeOperation = 'lighter';
+                drawGlow(ctx, def.color, d.x + d.w / 2, d.y + d.h / 2 + bob, 52 + Math.sin(d.t * 5) * 6);
+                ctx.globalCompositeOperation = 'source-over';
+                blit(ctx, Sprites.capsule[d.type], Math.round(d.x), Math.round(d.y + bob));
             }
         }
     };
+
+    /* ======================================================================
+       COMBO  (mới) — giết liên tiếp trong cửa sổ thời gian để nhân điểm
+       ====================================================================== */
+    const Combo = {
+        count: 0, timer: 0,
+        mult() {
+            return Math.min(CONFIG.combo.maxMult, 1 + Math.floor(this.count / CONFIG.combo.killsPerStep));
+        },
+        hit() { this.count++; this.timer = CONFIG.combo.window; },
+        reset() { this.count = 0; this.timer = 0; },
+        update(dt) {
+            if (this.timer > 0) {
+                this.timer -= dt;
+                if (this.timer <= 0) this.count = 0;
+            }
+        }
+    };
+
 
     /* ======================================================================
        SCORE
@@ -775,7 +1005,6 @@
             if (Game.score > Game.hi) {
                 Game.hi = Game.score;
                 Game.newHigh = true;
-                HighScore.save(Game.hi);
             }
         }
     };
@@ -787,51 +1016,77 @@
         const cx = e.x + e.w / 2, cy = e.y + e.h / 2;
         Formation.remove(e);
         Formation.destroyed++;
-        Score.add(e.type.score);
+        Combo.hit();
+        const mult = Combo.mult();
+        const pts = e.type.score * mult;
+        Score.add(pts);
         FX.explosion(cx, cy, [e.type.color, '#FFFFFF']);
-        FX.popup(cx, cy, '+' + e.type.score, e.type.color);
+        FX.popup(cx, cy, '+' + pts + (mult > 1 ? ' ×' + mult : ''), mult > 1 ? COLORS.amber : e.type.color);
         Sound.enemyHit();
         Sound.enemyDestroy();
+        PowerUps.maybeDrop(e);
         if (Formation.count === 0) completeLevel();
     }
 
     function hitPlayer(force) {
         if (Game.state !== STATE.PLAYING) return;
-        if (Player.invuln > 0 && !force) return;
+        if (!force) {
+            if (Player.invuln > 0) return;
+            if (PowerUps.active.barrier > 0) {          // khiên hấp thụ 1 đòn
+                PowerUps.active.barrier = 0;
+                Player.invuln = 1.0;
+                const cx = Player.x + Player.w / 2, cy = Player.y + Player.h / 2;
+                FX.ring(cx, cy, COLORS.green, 54, 0.45);
+                FX.burst(cx, cy, [COLORS.green, '#ffffff'], 16, 60, 200, 2);
+                FX.flash(COLORS.green, 0.22, 3);
+                FX.shake(3, 0.12);
+                Sound.barrierBreak();
+                return;
+            }
+        }
         Game.lives--;
         Game.state = STATE.PLAYER_HIT;
         Game.stateTimer = CONFIG.player.respawnDelay / 1000;
         Player.visible = false;
-        Player.bullet = null;
+        Player.bullets.length = 0;
+        Combo.reset();
+        PowerUps.active.barrier = 0;
         FX.explosion(Player.x + Player.w / 2, Player.y + Player.h / 2,
-            [COLORS.player, '#FFFFFF', COLORS.playerAccent], 30);
-        FX.flash('#FFFFFF', 0.55, 3);
+            [COLORS.player, '#FFFFFF', '#7dd3fc'], 30);
+        FX.flash('#FFFFFF', 0.5, 3);
         FX.shake(5, 0.2);
         Sound.playerHit();
+        UI.say(Game.lives > 0 ? 'Bị trúng đạn, còn ' + Game.lives + ' mạng' : 'Hết mạng');
     }
 
     function completeLevel() {
         Game.state = STATE.LEVEL_COMPLETE;
         Game.stateTimer = CONFIG.timing.levelCompleteDelay / 1000;
-        Score.add(CONFIG.score.levelBonus);   // chỉ gọi một lần vì state đã đổi
-        Player.bullet = null;
+        Score.add(CONFIG.score.levelBonus);
+        Player.bullets.length = 0;
         EnemyBullets.reset();
-        FX.flash(COLORS.cyan, 0.35, 1.2);
+        PowerUps.drops.length = 0;
+        FX.flash(COLORS.cyan, 0.3, 1.2);
         FX.shake(3, 0.15);
         Sound.levelComplete();
+        UI.banner('HOÀN THÀNH', '+' + CONFIG.score.levelBonus + ' THƯỞNG');
     }
 
     function endGame() {
         Game.state = STATE.GAME_OVER;
-        if (Game.score >= Game.hi && Game.score > 0) HighScore.save(Game.hi);
+        Game.restartLock = CONFIG.timing.restartLock;
+        const rank = Game.submitted ? -1 : Scores.submit(Game.score);
+        Game.submitted = true;
+        UI.fillGameOver(rank);
         Sound.gameOver();
+        UI.say('Trò chơi kết thúc. Điểm ' + Math.floor(Game.score));
     }
 
     function respawnPlayer() {
         Player.resetPosition();
         Player.visible = true;
         Player.invuln = CONFIG.player.invulnerable / 1000;
-        Player.bullet = null;
+        Player.bullets.length = 0;
         EnemyBullets.reset();
         Game.state = STATE.PLAYING;
     }
@@ -839,55 +1094,50 @@
     /* ======================================================================
        COLLISION
        ====================================================================== */
-    function resolveCollisions() {
-        // 1. Đạn player vs shield, rồi vs enemy
-        const pb = Player.bullet;
-        if (pb) {
-            const rect = sweptRect(pb);
-            let consumed = false;
-            for (const s of Shields.list) {
-                if (Shields.hit(s, rect, false)) { consumed = true; Sound.shieldHit(); break; }
+    function resolvePlayerBullets() {
+        const list = Player.bullets;
+        for (let i = list.length - 1; i >= 0; i--) {
+            const b = list[i];
+            const rect = sweptRect(b);
+            let consumed = false, victim = null;
+            for (const e of Formation.enemies) {
+                if (overlap(e, rect)) { victim = e; consumed = true; break; }
             }
-            if (!consumed) {
-                for (const e of Formation.enemies) {
-                    if (overlap(e, rect)) { Player.bullet = null; consumed = true; killEnemy(e); break; }
-                }
-            } else {
-                Player.bullet = null;
-            }
-            if (Game.state !== STATE.PLAYING) return;   // level vừa hoàn thành
+            if (consumed) list.splice(i, 1);
+            if (victim) killEnemy(victim);
+            if (Game.state !== STATE.PLAYING) return;     // level vừa hoàn thành
         }
+    }
 
-        // 2. Đạn enemy vs shield, rồi vs player
+    function resolveCollisions() {
+        // 1. Đạn player vs enemy
+        resolvePlayerBullets();
+        if (Game.state !== STATE.PLAYING) return;
+
+        // 2. Đạn enemy vs player
         for (const b of EnemyBullets.list) {
             if (b.dead) continue;
             const rect = sweptRect(b);
-            let consumed = false;
-            for (const s of Shields.list) {
-                if (Shields.hit(s, rect, true)) { consumed = true; Sound.shieldHit(); break; }
-            }
-            if (!consumed && Player.visible && Player.invuln <= 0 && overlap(Player, rect)) {
-                consumed = true;
+            if (Player.visible && Player.invuln <= 0 && overlap(Player, rect)) {
                 b.dead = true;
                 hitPlayer(false);
-                break;      // một sự kiện trúng đạn mỗi frame
+                if (Game.state !== STATE.PLAYING) break;   // một sự kiện chết mỗi frame
             }
-            if (consumed) b.dead = true;
         }
         EnemyBullets.compact();
         if (Game.state !== STATE.PLAYING) return;
 
-        // 3. Enemy chạm bunker
-        if (Formation.maxY() >= Shields.top()) {
-            for (const s of Shields.list) {
-                if (!s.alive) continue;
-                for (const e of Formation.enemies) Shields.trample(s, e);
+        // 3. Tàu đâm vào kẻ địch (khi bay lên giữa đội hình)
+        if (Player.visible && Player.invuln <= 0) {
+            for (const e of Formation.enemies) {
+                if (overlap(Player, e)) { hitPlayer(false); break; }
             }
+            if (Game.state !== STATE.PLAYING) return;
         }
 
-        // 4. Formation chạm player / tiến vào vùng nguy hiểm (đáy enemy >= đỉnh player)
-        if (Formation.maxY() >= Player.y) {
-            Formation.pullBack();       // đưa formation về vị trí xuất phát để không lặp mất mạng
+        // 4. Đội hình hạ xuống tới đường phòng thủ cuối cùng
+        if (Formation.maxY() >= CONFIG.player.y) {
+            Formation.pullBack();
             hitPlayer(true);
         }
     }
@@ -897,27 +1147,33 @@
        ====================================================================== */
     function setupLevel() {
         Formation.init(Game.level);
-        Shields.init();
         EnemyBullets.reset();
-        Player.bullet = null;
+        Player.bullets.length = 0;
+        PowerUps.drops.length = 0;
         EnemyBullets.scheduleNext();
         Game.enemyFireIn = Math.max(Game.enemyFireIn, 0.8);
+        UI.banner('CẤP ĐỘ ' + Game.level, 'SẴN SÀNG');
     }
 
     function startGame() {
         Game.score = 0;
         Game.newHigh = false;
+        Game.submitted = false;
         Game.level = 1;
         Game.lives = CONFIG.player.lives;
         Game.stateTimer = 0;
         FX.reset();
         Player.reset();
+        PowerUps.reset();
+        Combo.reset();
         setupLevel();
         Game.state = STATE.PLAYING;
+        UI.say('Bắt đầu. Cấp độ 1');
     }
 
     function onEnter() {
-        if (Game.state === STATE.MENU || Game.state === STATE.GAME_OVER) startGame();
+        if (Game.state === STATE.MENU) startGame();
+        else if (Game.state === STATE.GAME_OVER && Game.restartLock <= 0) startGame();
     }
 
     function togglePause() {
@@ -927,32 +1183,166 @@
                    Game.state === STATE.LEVEL_COMPLETE) {
             Game.prevState = Game.state;
             Game.state = STATE.PAUSED;
+            Input.touch.left = Input.touch.right = Input.touch.up = Input.touch.down = Input.touch.fire = false;
         }
     }
+
+    function toggleMute() {
+        Sound.init();
+        Sound.setMuted(!Sound.muted);
+        UI.syncMute();
+    }
+
+    /* ======================================================================
+       UI (DOM: HUD, màn hình kính mờ, banner)
+       ====================================================================== */
+    const UI = {
+        els: {}, cache: {},
+
+        init() {
+            const $ = (id) => document.getElementById(id);
+            this.els = {
+                score: $('hud-score'), hi: $('hud-hi'), level: $('hud-level'), lives: $('hud-lives'),
+                menu: $('screen-menu'), pause: $('screen-pause'), over: $('screen-over'),
+                menuHi: $('menu-hi'),
+                overScore: $('over-score'), overNew: $('over-new'), overList: $('over-list'),
+                banner: $('banner'), bannerTitle: $('banner-title'), bannerSub: $('banner-sub'),
+                announce: $('announce'),
+                muteBtn: $('btn-mute'), muteUse: $('mute-use'), pauseBtn: $('btn-pause'),
+                chips: {
+                    combo: $('chip-combo'), rapid: $('chip-rapid'),
+                    spread: $('chip-spread'), barrier: $('chip-barrier')
+                },
+                comboText: $('combo-text')
+            };
+            $('btn-start').addEventListener('click', () => { Sound.init(); onEnter(); });
+            $('btn-retry').addEventListener('click', () => { Sound.init(); onEnter(); });
+            $('btn-resume').addEventListener('click', () => togglePause());
+            this.els.pauseBtn.addEventListener('click', () => { Sound.init(); togglePause(); });
+            this.els.muteBtn.addEventListener('click', toggleMute);
+            this.syncMute();
+        },
+
+        text(key, el, val) {
+            if (this.cache[key] !== val) { this.cache[key] = val; el.textContent = val; }
+        },
+
+        syncMute() {
+            const m = Sound.muted;
+            this.els.muteBtn.setAttribute('aria-pressed', m ? 'true' : 'false');
+            this.els.muteUse.setAttribute('href', m ? '#i-mute' : '#i-sound');
+        },
+
+        say(msg) { this.els.announce.textContent = msg; },
+
+        banner(title, sub) {
+            const b = this.els.banner;
+            this.els.bannerTitle.textContent = title;
+            this.els.bannerSub.textContent = sub || '';
+            b.classList.remove('show');
+            void b.offsetWidth;            // khởi động lại animation
+            b.classList.add('show');
+        },
+
+        fillGameOver(rank) {
+            const e = this.els;
+            e.overScore.textContent = pad6(Game.score);
+            e.overNew.hidden = !(rank === 0);
+            e.overList.innerHTML = '';
+            Scores.list.forEach((s, i) => {
+                const li = document.createElement('li');
+                if (i === rank) li.className = 'me';
+                const b = document.createElement('b');
+                b.textContent = pad6(s);
+                li.appendChild(b);
+                e.overList.appendChild(li);
+            });
+        },
+
+        setProgress(key, el, p) {
+            const q = Math.round(p * 50) / 50;
+            if (this.cache[key] !== q) { this.cache[key] = q; el.style.setProperty('--p', q); }
+        },
+
+        sync() {
+            const e = this.els;
+            this.text('score', e.score, pad6(Game.score));
+            this.text('hi', e.hi, pad6(Game.hi));
+            this.text('menuHi', e.menuHi, pad6(Game.hi));
+            this.text('level', e.level, String(Game.level));
+
+            if (this.cache.lives !== Game.lives) {
+                this.cache.lives = Game.lives;
+                let html = '';
+                for (let i = 0; i < Math.max(0, Game.lives); i++) {
+                    html += '<svg class="life" viewBox="0 0 32 24" aria-hidden="true"><use href="#i-ship"/></svg>';
+                }
+                e.lives.innerHTML = html;
+                e.lives.setAttribute('aria-label', 'Mạng còn lại: ' + Math.max(0, Game.lives));
+            }
+
+            const scr = Game.state === STATE.MENU ? 'menu'
+                : Game.state === STATE.PAUSED ? 'pause'
+                : Game.state === STATE.GAME_OVER ? 'over' : '';
+            if (this.cache.screen !== scr) {
+                this.cache.screen = scr;
+                e.menu.hidden = scr !== 'menu';
+                e.pause.hidden = scr !== 'pause';
+                e.over.hidden = scr !== 'over';
+                if (scr === 'pause') document.getElementById('btn-resume').focus({ preventScroll: true });
+                else if (document.activeElement && document.activeElement.blur &&
+                         document.activeElement.id === 'btn-resume') document.activeElement.blur();
+            }
+
+            // Chip combo + power-up
+            const A = PowerUps.active, P = CONFIG.powerup.types;
+            const showCombo = Combo.count >= 2;
+            if (this.cache.combo !== showCombo) { this.cache.combo = showCombo; e.chips.combo.hidden = !showCombo; }
+            if (showCombo) {
+                this.text('comboText', e.comboText, '×' + Combo.mult() + ' · ' + Combo.count);
+                this.setProgress('comboP', e.chips.combo, Combo.timer / CONFIG.combo.window);
+            }
+            ['rapid', 'spread', 'barrier'].forEach((k) => {
+                const on = A[k] > 0;
+                if (this.cache['on_' + k] !== on) { this.cache['on_' + k] = on; e.chips[k].hidden = !on; }
+                if (on) this.setProgress('p_' + k, e.chips[k], A[k] / P[k].duration);
+            });
+        }
+    };
 
     /* ======================================================================
        UPDATE
        ====================================================================== */
     function updatePlaying(dt) {
-        Player.update(dt);              // 1-2. input + movement
-        Player.updateBullet(dt);        // 3. player bullet
-        Formation.update(dt);           // 4. enemy movement
-        EnemyBullets.update(dt);        // 5-6. enemy shooting + bullets
-        resolveCollisions();            // 7-8. collision + shield damage
+        Player.update(dt);
+        Player.updateBullets(dt);
+        Formation.update(dt);
+        EnemyBullets.update(dt);
+        PowerUps.tickTimers(dt);
+        PowerUps.update(dt);
+        Combo.update(dt);
+        resolveCollisions();
     }
 
     function update(dt) {
-        if (Game.state === STATE.PAUSED) return;   // pause dừng toàn bộ gameplay
+        if (Game.state === STATE.PAUSED) return;
         Game.time += dt;
         Stars.update(dt);
-        FX.update(dt);                              // 9. particles
+        FX.update(dt);
 
         switch (Game.state) {
+            case STATE.MENU:
+                // Attract mode: đội hình lắc nhẹ phía sau menu
+                Formation.x = Game.menuBaseX + Math.sin(Game.time * 0.7) * 46;
+                Formation.animFrame = Math.floor(Game.time * 2) % 2;
+                Formation.layout();
+                break;
             case STATE.PLAYING:
                 updatePlaying(dt);
                 break;
             case STATE.PLAYER_HIT:
                 Player.update(dt);
+                PowerUps.update(dt);
                 Game.stateTimer -= dt;
                 if (Game.stateTimer <= 0) {
                     if (Game.lives > 0) respawnPlayer(); else endGame();
@@ -967,6 +1357,9 @@
                     setupLevel();
                     Game.state = STATE.PLAYING;
                 }
+                break;
+            case STATE.GAME_OVER:
+                if (Game.restartLock > 0) Game.restartLock -= dt;
                 break;
             default:
                 break;
@@ -988,43 +1381,63 @@
             canvas.width = size; canvas.height = size;
         }
         scale = size / W;
-        ctx.imageSmoothingEnabled = false;
+        ctx.imageSmoothingEnabled = true;
+        ctx.imageSmoothingQuality = 'high';
     }
 
     function text(str, x, y, size, color, align) {
-        ctx.font = 'bold ' + size + 'px "Courier New", Courier, monospace';
+        ctx.font = '700 ' + size + 'px "Orbitron", "Rajdhani", monospace';
         ctx.textAlign = align || 'left';
         ctx.textBaseline = 'alphabetic';
         ctx.fillStyle = color || COLORS.ui;
         ctx.fillText(str, x, y);
     }
 
-    function drawHUD() {
-        text('SCORE: ' + pad6(Game.score), 16, 28, 18, COLORS.ui, 'left');
-        text('HI: ' + pad6(Game.hi), W / 2, 28, 18, COLORS.cyan, 'center');
-        text('LEVEL ' + Game.level, W - 16, 28, 18, COLORS.ui, 'right');
-        ctx.fillStyle = 'rgba(57,255,20,0.35)';
-        ctx.fillRect(0, 656, W, 1);                       // đường mặt đất
-        text('LIVES:', 16, 689, 16, COLORS.ui, 'left');
-        for (let i = 0; i < Game.lives; i++) ctx.drawImage(Sprites.heart, 84 + i * 26, 674);
+    let groundGrad = null;
+    function drawGround() {
+        if (!groundGrad) {
+            groundGrad = ctx.createLinearGradient(0, 0, W, 0);
+            groundGrad.addColorStop(0, 'rgba(34,211,238,0)');
+            groundGrad.addColorStop(0.5, 'rgba(34,211,238,0.55)');
+            groundGrad.addColorStop(1, 'rgba(34,211,238,0)');
+        }
+        ctx.fillStyle = groundGrad;
+        ctx.fillRect(0, 656, W, 1.5);
     }
 
-    function drawPlayerBullet() {
-        const b = Player.bullet;
-        if (!b) return;
-        ctx.fillStyle = '#FFFFFF';
-        ctx.fillRect(Math.round(b.x), Math.round(b.y), b.w, b.h);
-        ctx.fillStyle = COLORS.player;
-        ctx.fillRect(Math.round(b.x), Math.round(b.y + b.h - 3), b.w, 3);
+    function drawPlayerBullets() {
+        ctx.globalCompositeOperation = 'lighter';
+        for (const b of Player.bullets) {
+            // vệt đuôi
+            for (let k = 1; k <= 4; k++) {
+                ctx.fillStyle = 'rgba(34,211,238,' + (0.34 / k).toFixed(2) + ')';
+                ctx.fillRect(Math.round(b.x - b.vx * 0.006 * k), Math.round(b.y + b.h + (k - 1) * 5), b.w, 5);
+            }
+            drawGlow(ctx, COLORS.cyan, b.x + b.w / 2, b.y + b.h / 2, 30);
+        }
+        ctx.globalCompositeOperation = 'source-over';
+        for (const b of Player.bullets) {
+            ctx.fillStyle = '#FFFFFF';
+            ctx.fillRect(Math.round(b.x), Math.round(b.y), b.w, b.h);
+        }
     }
 
     function drawParticles() {
+        ctx.globalCompositeOperation = 'lighter';
         for (const p of FX.particles) {
             ctx.globalAlpha = Math.max(0, p.life / p.maxLife);
             ctx.fillStyle = p.color;
             ctx.fillRect(Math.round(p.x), Math.round(p.y), p.size, p.size);
         }
+        for (const r of FX.rings) {
+            const k = 1 - r.life / r.maxLife;
+            ctx.globalAlpha = Math.max(0, 1 - k) * 0.9;
+            ctx.strokeStyle = r.color;
+            ctx.lineWidth = 2 * (1 - k) + 0.5;
+            ctx.beginPath(); ctx.arc(r.x, r.y, r.maxR * (0.2 + 0.8 * k), 0, Math.PI * 2); ctx.stroke();
+        }
         ctx.globalAlpha = 1;
+        ctx.globalCompositeOperation = 'source-over';
         for (const p of FX.popups) {
             ctx.globalAlpha = Math.max(0, p.life / p.maxLife);
             text(p.text, p.x, p.y, 14, p.color, 'center');
@@ -1033,76 +1446,32 @@
     }
 
     function drawScene() {
-        Shields.render(ctx);
+        drawGround();
         Formation.render(ctx);
+        PowerUps.render(ctx);
         EnemyBullets.render(ctx);
-        drawPlayerBullet();
+        drawPlayerBullets();
         Player.render(ctx);
         drawParticles();
-        drawHUD();
-    }
-
-    function drawMenu() {
-        const pulse = 0.85 + 0.15 * Math.sin(Game.time * 3);
-        ctx.shadowColor = COLORS.player; ctx.shadowBlur = 16 * pulse;
-        text('GALACTIC', W / 2, 150, 64, COLORS.player, 'center');
-        ctx.shadowColor = COLORS.cyan;
-        text('INVASION', W / 2, 220, 64, COLORS.cyan, 'center');
-        ctx.shadowBlur = 0;
-
-        const rows = [['scout', '= 30 PTS'], ['soldier', '= 20 PTS'], ['grunt', '= 10 PTS']];
-        rows.forEach((r, i) => {
-            const y = 280 + i * 48;
-            ctx.drawImage(Sprites.enemy[r[0]][Math.floor(Game.time * 2) % 2], 250, y);
-            text(r[1], 310, y + 18, 20, ENEMY_TYPES[r[0]].color, 'left');
-        });
-
-        ctx.drawImage(Sprites.player, W / 2 - 16, 450);
-        if (Math.floor(Game.time * 2) % 2 === 0) text('PRESS ENTER TO START', W / 2, 540, 26, COLORS.ui, 'center');
-        text('HIGH SCORE: ' + pad6(Game.hi), W / 2, 590, 20, COLORS.cyan, 'center');
-        text('A/D or ARROWS: MOVE   SPACE: FIRE   P: PAUSE', W / 2, 650, 14, '#889', 'center');
-    }
-
-    function dim(alpha) {
-        ctx.fillStyle = 'rgba(0,0,0,' + alpha + ')';
-        ctx.fillRect(0, 0, W, H);
-    }
-
-    function drawOverlays(state) {
-        if (state === STATE.LEVEL_COMPLETE) {
-            text('LEVEL CLEAR!', W / 2, 330, 50, COLORS.player, 'center');
-            text('BONUS +' + CONFIG.score.levelBonus, W / 2, 375, 24, COLORS.cyan, 'center');
-        } else if (state === STATE.GAME_OVER) {
-            dim(0.65);
-            text('GAME OVER', W / 2, 270, 56, '#FF2020', 'center');
-            text('SCORE: ' + pad6(Game.score), W / 2, 335, 24, COLORS.ui, 'center');
-            text('HIGH SCORE: ' + pad6(Game.hi), W / 2, 372, 24, COLORS.cyan, 'center');
-            if (Game.newHigh) {
-                const c = Math.floor(Game.time * 6) % 2 ? COLORS.special : '#FFFF40';
-                text('NEW HIGH SCORE!', W / 2, 425, 28, c, 'center');
-            }
-            if (Math.floor(Game.time * 2) % 2 === 0) text('PRESS ENTER TO RETRY', W / 2, 490, 24, COLORS.ui, 'center');
-        }
-        if (Game.state === STATE.PAUSED) {
-            dim(0.6);
-            text('PAUSED', W / 2, 340, 56, COLORS.ui, 'center');
-            text('PRESS P TO RESUME', W / 2, 390, 22, COLORS.cyan, 'center');
-        }
     }
 
     function render() {
         const logical = Game.state === STATE.PAUSED ? Game.prevState : Game.state;
 
         ctx.setTransform(scale, 0, 0, scale, 0, 0);
-        ctx.fillStyle = '#000000';
-        ctx.fillRect(0, 0, W, H);
+        ctx.clearRect(0, 0, W, H);      // nền (tinh vân) do CSS đảm nhiệm
 
-        // Screen shake chỉ là offset khi vẽ, không đụng tới toạ độ gameplay
         const off = Game.state === STATE.PAUSED ? { x: 0, y: 0 } : FX.shakeOffset();
         ctx.setTransform(scale, 0, 0, scale, off.x * scale, off.y * scale);
 
         Stars.render(ctx);
-        if (logical === STATE.MENU) drawMenu(); else drawScene();
+        if (logical === STATE.MENU) {
+            ctx.globalAlpha = 0.45;
+            Formation.render(ctx);
+            ctx.globalAlpha = 1;
+        } else {
+            drawScene();
+        }
 
         ctx.setTransform(scale, 0, 0, scale, 0, 0);
         if (FX.flashAlpha > 0) {
@@ -1111,11 +1480,10 @@
             ctx.fillRect(0, 0, W, H);
             ctx.globalAlpha = 1;
         }
-        drawOverlays(logical);
     }
 
     /* ======================================================================
-       GAME LOOP (duy nhất một vòng lặp, khởi động một lần)
+       GAME LOOP
        ====================================================================== */
     let lastTs = null;
     let loopStarted = false;
@@ -1128,6 +1496,7 @@
         try {
             update(dt);
             render();
+            UI.sync();
         } catch (err) {
             console.error('Game error:', err);
         }
@@ -1136,14 +1505,30 @@
     function init() {
         if (loopStarted) return;
         loopStarted = true;
-        Game.hi = HighScore.load();
+        Scores.load();
+        Game.hi = Scores.best();
         Sprites.build();
+        Sprites.paintLegend();
         Stars.init();
         Player.reset();
+        Formation.init(1);                 // dùng cho attract mode ở menu
+        Game.menuBaseX = Formation.x;
         Input.init();
+        UI.init();
         resizeCanvas();
         window.addEventListener('resize', resizeCanvas);
+        if (window.ResizeObserver) new ResizeObserver(resizeCanvas).observe(canvas);
+        // Lưu điểm nếu người chơi đóng tab giữa ván
+        window.addEventListener('pagehide', () => {
+            if (!Game.submitted && Game.score > 0 && Game.state !== STATE.MENU) {
+                Scores.submit(Game.score); Game.submitted = true;
+            }
+        });
         requestAnimationFrame(frame);
+
+        if (/[?&]debug\b/.test(location.search)) {
+            window.__GI = { Game, Player, Formation, PowerUps, Combo, EnemyBullets, FX, STATE, hitPlayer, killEnemy, startGame };
+        }
     }
 
     init();

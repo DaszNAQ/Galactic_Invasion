@@ -1,24 +1,143 @@
 <!DOCTYPE html>
-<html lang="vi">
+<html lang="en">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover, user-scalable=no">
+    <meta name="theme-color" content="#050816">
+    <meta name="color-scheme" content="dark">
     <title>GALACTIC INVASION</title>
-    <link rel="stylesheet" href="style.css">
+    <meta name="description" content="Galactic Invasion — a cosmic weather arcade prototype.">
+    <link rel="stylesheet" href="css/style.css">
+    <link rel="stylesheet" href="css/game.css">
+    <link rel="stylesheet" href="css/ui.css">
+    <link rel="stylesheet" href="css/effects.css">
 </head>
 <body>
-    <main id="game-container">
-        <canvas id="game" width="700" height="700" aria-label="Galactic Invasion - game canvas"></canvas>
-        <p class="controls-hint">
-            <span><kbd>←</kbd><kbd>→</kbd> / <kbd>A</kbd><kbd>D</kbd> Di chuyển</span>
-            <span><kbd>Space</kbd> Bắn</span>
-            <span><kbd>P</kbd> Tạm dừng</span>
-            <span><kbd>Enter</kbd> Bắt đầu / Chơi lại</span>
+    <!-- Shared vector icons for the HUD -->
+    <svg width="0" height="0" style="position:absolute" aria-hidden="true">
+        <symbol id="i-ship" viewBox="0 0 32 24">
+            <path d="M16 1 L21 10 L30 17 L29 21 L21 19 L18.5 23 L13.5 23 L11 19 L3 21 L2 17 L11 10 Z"
+                  fill="currentColor" fill-opacity=".2" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/>
+        </symbol>
+        <symbol id="i-pause" viewBox="0 0 24 24"><path d="M7 5h3.5v14H7zM13.5 5H17v14h-3.5z" fill="currentColor"/></symbol>
+        <symbol id="i-sound" viewBox="0 0 24 24"><path d="M4 9.5h3.5L12 5.5v13l-4.5-4H4z" fill="currentColor"/><path d="M15 9a4.2 4.2 0 0 1 0 6M17.5 6.5a8 8 0 0 1 0 11" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></symbol>
+        <symbol id="i-mute" viewBox="0 0 24 24"><path d="M4 9.5h3.5L12 5.5v13l-4.5-4H4z" fill="currentColor"/><path d="M15.5 9.5l5 5m0-5l-5 5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></symbol>
+    </svg>
+
+    <div id="app">
+        <div id="stage">
+            <div class="board" id="board">
+                <canvas id="game" width="700" height="700" role="img"
+                        aria-label="Galactic Invasion gameplay screen"></canvas>
+
+                <!-- Top HUD -->
+                <header class="hud hud-top">
+                    <div class="metric">
+                        <span class="label">SCORE / RUN</span>
+                        <span class="value" id="hud-score">000000</span>
+                    </div>
+                    <div class="metric metric-center">
+                        <span class="label">PERSONAL BEST</span>
+                        <span class="value value-accent" id="hud-hi">000000</span>
+                    </div>
+                    <div class="metric metric-right">
+                        <span class="label">SECTOR</span>
+                        <span class="value" id="hud-level">1</span>
+                    </div>
+                </header>
+
+                <!-- Bottom HUD -->
+                <footer class="hud hud-bottom">
+                    <div class="lives" id="hud-lives" aria-label="Lives remaining"></div>
+                    <div class="chips" id="hud-chips">
+                        <div class="chip chip-autofire"><b>AUTO</b></div>
+                        <div class="chip chip-combo" id="chip-combo" hidden>
+                            <b id="combo-text">×2</b><i></i>
+                        </div>
+                        <div class="chip chip-rapid" id="chip-rapid" hidden><span>RAPID FIRE</span><i></i></div>
+                        <div class="chip chip-spread" id="chip-spread" hidden><span>SPREAD SHOT</span><i></i></div>
+                        <div class="chip chip-barrier" id="chip-barrier" hidden><span>ENERGY SHIELD</span><i></i></div>
+                    </div>
+                    <div class="tools">
+                        <button class="icon-btn" id="btn-mute" type="button" aria-label="Toggle audio (M)" aria-pressed="false">
+                            <svg viewBox="0 0 24 24" aria-hidden="true"><use href="#i-sound" id="mute-use"/></svg>
+                        </button>
+                        <button class="icon-btn" id="btn-pause" type="button" aria-label="Pause game (P)">
+                            <svg viewBox="0 0 24 24" aria-hidden="true"><use href="#i-pause"/></svg>
+                        </button>
+                    </div>
+                </footer>
+
+                <div class="banner" id="banner" aria-hidden="true">
+                    <strong id="banner-title"></strong>
+                    <span id="banner-sub"></span>
+                </div>
+
+                <!-- Main menu -->
+                <section class="screen" id="screen-menu" aria-labelledby="menu-title">
+                    <div class="card">
+                        <p class="eyebrow">ORBITAL DEFENSE NETWORK&nbsp; / &nbsp;UPLINK STABLE</p>
+                        <h1 id="menu-title"><span>GALACTIC</span><span>INVASION</span></h1>
+                        <p class="menu-subtitle">NEO COSMIC DEFENSE PROTOCOL</p>
+                        <ul class="legend" aria-label="Enemy score values">
+                            <li><canvas width="64" height="48" data-enemy="scout"></canvas><b>30</b><small>SCOUT</small></li>
+                            <li><canvas width="64" height="48" data-enemy="soldier"></canvas><b>20</b><small>STRIKER</small></li>
+                            <li><canvas width="64" height="48" data-enemy="grunt"></canvas><b>10</b><small>DRONE</small></li>
+                        </ul>
+                        <button class="btn btn-primary" id="btn-start" type="button">INITIATE DEFENSE <kbd>ENTER</kbd></button>
+                        <p class="best">PERSONAL BEST <b id="menu-hi">000000</b></p>
+                        <p class="keys">
+                            <span><kbd>WASD</kbd> / <kbd>ARROWS</kbd> MOVE</span>
+                            <span><kbd>SPACE</kbd> FIRE</span>
+                            <span><kbd>P</kbd> PAUSE</span>
+                            <span><kbd>M</kbd> AUDIO</span>
+                        </p>
+                        <p class="mobile-instructions">DRAG TO MOVE <span>·</span> WEAPONS FIRE AUTOMATICALLY</p>
+                    </div>
+                </section>
+
+                <!-- Pause screen -->
+                <section class="screen" id="screen-pause" hidden aria-labelledby="pause-title">
+                    <div class="card card-compact">
+                        <h2 id="pause-title">SYSTEM PAUSED</h2>
+                        <button class="btn btn-primary" id="btn-resume" type="button">RESUME MISSION <kbd>P</kbd></button>
+                    </div>
+                </section>
+
+                <!-- Game over screen -->
+                <section class="screen" id="screen-over" hidden aria-labelledby="over-title">
+                    <div class="card">
+                        <h2 class="danger" id="over-title">MISSION ENDED</h2>
+                        <p class="final">FINAL SCORE <b id="over-score">000000</b></p>
+                        <p class="new-high" id="over-new" hidden>★ NEW PERSONAL BEST ★</p>
+                        <ol class="board-list" id="over-list" aria-label="Top 5 điểm cao"></ol>
+                        <button class="btn btn-primary" id="btn-retry" type="button">REDEPLOY <kbd>ENTER</kbd></button>
+                    </div>
+                </section>
+            </div>
+        </div>
+
+        <p class="hint" id="hint">
+            <span><kbd>WASD</kbd> / <kbd>ARROWS</kbd> MOVE</span>
+            <span><kbd>SPACE</kbd> FIRE</span>
+            <span><kbd>P</kbd> PAUSE</span>
+            <span><kbd>M</kbd> AUDIO</span>
         </p>
-    </main>
+    </div>
+
+    <div id="orientation-warning" role="status" aria-live="polite">
+        <div class="orientation-card">
+            <span class="orientation-mark">↻</span>
+            <strong>PORTRAIT MODE REQUIRED</strong>
+            <span>Rotate your device vertically to play.</span>
+        </div>
+    </div>
+
+    <div class="sr-only" id="announce" aria-live="polite"></div>
+
     <noscript>
-        <p class="noscript">GALACTIC INVASION cần JavaScript để chạy. Vui lòng bật JavaScript trong trình duyệt.</p>
+        <p class="noscript">GALACTIC INVASION requires JavaScript. Please enable JavaScript in your browser.</p>
     </noscript>
-    <script src="game.js"></script>
+    <script type="module" src="js/main.js"></script>
 </body>
 </html>
