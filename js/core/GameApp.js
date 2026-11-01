@@ -270,7 +270,7 @@ const enemyStartY = () => isPortraitPlayfield()
             }
             ctx.globalCompositeOperation = 'source-over';
 
-            blit(ctx, Sprites.player, this.x, this.y);
+            blit(ctx, Sprites.player, this.x, this.y, 1.18);
 
             if (this.muzzle > 0) {
                 ctx.globalCompositeOperation = 'lighter';
@@ -412,7 +412,7 @@ const enemyStartY = () => isPortraitPlayfield()
         render(ctx) {
             const f = this.animFrame;
             for (const e of this.enemies) {
-                blit(ctx, Sprites.enemy[e.type.key][f], Math.round(e.x), Math.round(e.y));
+                blit(ctx, Sprites.enemy[e.type.key][f], Math.round(e.x), Math.round(e.y), 1.18);
             }
         }
     };

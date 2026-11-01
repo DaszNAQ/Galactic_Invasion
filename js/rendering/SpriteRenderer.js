@@ -19,8 +19,10 @@ function makeSprite(w, h, draw) {
     return { cv, w, h, dw: w + PAD * 2, dh: h + PAD * 2 };
 }
 
-export function blit(ctx, s, x, y) {
-    ctx.drawImage(s.cv, x - PAD, y - PAD, s.dw, s.dh);
+export function blit(ctx, s, x, y, scale = 1) {
+    const width = s.dw * scale, height = s.dh * scale;
+    // Scale around the logical sprite center so its position and hitbox stay aligned.
+    ctx.drawImage(s.cv, x + s.w / 2 - width / 2, y + s.h / 2 - height / 2, width, height);
 }
 
 function neon(c, color, fillA, lw, blur) {
