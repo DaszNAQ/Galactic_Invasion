@@ -4,6 +4,7 @@ import { Store, Scores } from "../storage.js";
 import { Sound } from "../audio/SoundManager.js";
 import { Sprites, blit, drawGlow } from "../rendering/SpriteRenderer.js";
 import { createInput } from "../systems/InputManager.js";
+import { MagneticStorm } from "../systems/MagneticStorm.js";
 
 const isCoarsePointer = () => window.matchMedia?.('(pointer: coarse)').matches ?? false;
 const isPortraitPlayfield = () => isCoarsePointer() && window.matchMedia?.('(orientation: portrait)').matches;
@@ -917,6 +918,9 @@ const enemyStartY = () => isPortraitPlayfield()
         Game.time += dt;
         Stars.update(dt);
         FX.update(dt);
+        if (Game.state === STATE.PLAYING || Game.state === STATE.PLAYER_HIT || Game.state === STATE.LEVEL_COMPLETE) {
+            MagneticStorm.update(dt);
+        }
 
         switch (Game.state) {
             case STATE.MENU:
@@ -1076,6 +1080,7 @@ const enemyStartY = () => isPortraitPlayfield()
             Formation.render(ctx);
             ctx.globalAlpha = 1;
         } else {
+            MagneticStorm.render(ctx, W, H);
             drawScene();
         }
 
