@@ -41,14 +41,14 @@
                         <span class="value value-accent" id="hud-hi">000000</span>
                     </div>
                     <div class="metric metric-right">
-                        <span class="label">SECTOR</span>
+                        <span class="label">WAVE</span>
                         <span class="value" id="hud-level">1</span>
                     </div>
                 </header>
 
                 <!-- Bottom HUD -->
                 <footer class="hud hud-bottom">
-                    <div class="lives" id="hud-lives" aria-label="Lives remaining"></div>
+                    <div class="health-readout"><span class="label">HULL</span><div class="lives" id="hud-lives" aria-label="Lives remaining"></div></div>
                     <div class="chips" id="hud-chips">
                         <div class="chip chip-autofire"><b>AUTO</b></div>
                         <div class="chip chip-combo" id="chip-combo" hidden>
@@ -59,6 +59,9 @@
                         <div class="chip chip-barrier" id="chip-barrier" hidden><span>ENERGY SHIELD</span><i></i></div>
                     </div>
                     <div class="tools">
+                        <button class="icon-btn steer-btn" id="btn-steer" type="button" aria-label="Steer magnetic field clockwise (E)" title="Steer magnetic field (E)">
+                            <span aria-hidden="true">↻</span><b>STEER</b>
+                        </button>
                         <button class="icon-btn" id="btn-mute" type="button" aria-label="Toggle audio (M)" aria-pressed="false">
                             <svg viewBox="0 0 24 24" aria-hidden="true"><use href="#i-sound" id="mute-use"/></svg>
                         </button>
@@ -92,7 +95,11 @@
                             <span><kbd>P</kbd> PAUSE</span>
                             <span><kbd>M</kbd> AUDIO</span>
                         </p>
-                        <p class="mobile-instructions">DRAG TO MOVE <span>·</span> WEAPONS FIRE AUTOMATICALLY</p>
+                        <p class="mobile-instructions" id="mobile-controls-hint" aria-label="Touch controls">
+                            <span>DRAG TO MOVE</span>
+                            <span>AUTO FIRE</span>
+                            <span>TAP STEER TO CONTROL THE STORM</span>
+                        </p>
                     </div>
                 </section>
 

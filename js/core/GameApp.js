@@ -4,7 +4,7 @@ import { Store, Scores } from "../storage.js";
 import { Sound } from "../audio/SoundManager.js";
 import { Sprites, blit, drawGlow } from "../rendering/SpriteRenderer.js";
 import { createInput } from "../systems/InputManager.js";
-import { MagneticStorm } from "../systems/MagneticStorm.js";
+import { MagneticStorm, StormController } from "../systems/MagneticStorm.js";
 
 const isCoarsePointer = () => window.matchMedia?.('(pointer: coarse)').matches ?? false;
 const isPortraitPlayfield = () => isCoarsePointer() && window.matchMedia?.('(orientation: portrait)').matches;
@@ -37,7 +37,8 @@ const enemyStartY = () => isPortraitPlayfield()
         menuBaseX: 0
     };
 
-    const Input = createInput({ Sound, Game, STATE, onEnter, togglePause, toggleMute, getPlayer: () => Player });
+    const Input = createInput({ Sound, Game, STATE, onEnter, togglePause, toggleMute,
+        steerStorm: rotateStorm, getPlayer: () => Player });
 
     /* ======================================================================
        EFFECTS: particles, rings, popups, shake, flash, parallax stars
@@ -68,7 +69,9 @@ const enemyStartY = () => isPortraitPlayfield()
 
         explosion(x, y, colors, count) {
             this.burst(x, y, colors, count || randInt(CONFIG.fx.particleMin, CONFIG.fx.particleMax), 40, 190);
-            this.ring(x, y, colors[0], 34, 0.32);
+            this.ring(x, y, colors[0], 38, 0.34);
+            this.ring(x, y, colors[1] || COLORS.magenta, 20, 0.22);
+            this.burst(x, y, [COLORS.cyan, COLORS.magenta], 5, 18, 62, 1.5);
         },
 
         ring(x, y, color, maxR, life) {
@@ -229,7 +232,7 @@ const enemyStartY = () => isPortraitPlayfield()
                 this.bullets.push({
                     x, y, prevX: x, prevY: y, w: c.bulletWidth, h: c.bulletHeight,
                     vx: volley === 3 ? (k - 1) * c.spreadAngleVx : 0,
-                    vy: -c.bulletSpeed * REF
+                    vy: -c.bulletSpeed * REF, faction: 'player'
                 });
             }
             this.lastShot = Game.time;
@@ -458,7 +461,9 @@ const enemyStartY = () => isPortraitPlayfield()
             this.list.push({
                 x: bx, prevX: bx,
                 y: shooter.y + shooter.h, prevY: shooter.y + shooter.h,
-                w: B.width, h: B.height, speed, color: shooter.type.color, dead: false
+                w: B.width, h: B.height, speed, vx: 0, vy: speed,
+                faction: 'enemy', polarity: 1, deflection: 0, fieldStrength: 0, turnSign: 0,
+                color: shooter.type.color, dead: false
             });
             this.scheduleNext();
         },
@@ -467,9 +472,12 @@ const enemyStartY = () => isPortraitPlayfield()
             Game.enemyFireIn -= dt;
             if (Game.enemyFireIn <= 0) this.tryFire();
             for (const b of this.list) {
+                b.prevX = b.x;
                 b.prevY = b.y;
-                b.y += b.speed * dt;
-                if (b.y > H) b.dead = true;
+                MagneticStorm.applyToProjectile(b, dt);
+                b.x += b.vx * dt;
+                b.y += b.vy * dt;
+                if (b.y > H || b.x + b.w < -10 || b.x > W + 10) b.dead = true;
             }
             this.compact();
         },
@@ -484,6 +492,24 @@ const enemyStartY = () => isPortraitPlayfield()
         render(ctx) {
             for (const b of this.list) {
                 const cx = b.x + b.w / 2, cy = b.y + b.h / 2;
+                if (b.fieldStrength > 0.025) {
+                    const trailColor = b.turnSign < 0 ? '139,121,245' : '70,217,232';
+                    const speed = Math.hypot(b.vx, b.vy) || 1;
+                    const tx = -b.vx / speed, ty = -b.vy / speed;
+                    for (let i = 3; i >= 1; i--) {
+                        ctx.strokeStyle = 'rgba(' + trailColor + ',' + (0.07 + b.fieldStrength * 0.12) + ')';
+                        ctx.lineWidth = i === 1 ? 1.5 : 1;
+                        ctx.beginPath();
+                        ctx.moveTo(cx + tx * (i * 8), cy + ty * (i * 8));
+                        ctx.lineTo(cx + tx * (i * 8 + 5), cy + ty * (i * 8 + 5));
+                        ctx.stroke();
+                    }
+                    ctx.strokeStyle = 'rgba(' + trailColor + ',0.42)';
+                    ctx.lineWidth = 1.5;
+                    ctx.beginPath(); ctx.moveTo(b.prevX + b.w / 2, b.prevY + b.h / 2); ctx.lineTo(cx, cy); ctx.stroke();
+                    ctx.fillStyle = b.turnSign < 0 ? 'rgba(139,121,245,0.62)' : 'rgba(70,217,232,0.58)';
+                    ctx.beginPath(); ctx.arc(cx, cy, 1.3, 0, Math.PI * 2); ctx.fill();
+                }
                 ctx.globalCompositeOperation = 'lighter';
                 drawGlow(ctx, b.color, cx, cy, 26);
                 ctx.globalCompositeOperation = 'source-over';
@@ -744,6 +770,7 @@ const enemyStartY = () => isPortraitPlayfield()
     }
 
     function startGame() {
+        dismissTouchGuide();
         Input.clear();
         Game.score = 0;
         Game.newHigh = false;
@@ -755,6 +782,7 @@ const enemyStartY = () => isPortraitPlayfield()
         Player.reset();
         PowerUps.reset();
         Combo.reset();
+        StormController.reset();
         setupLevel();
         Game.state = STATE.PLAYING;
         UI.say('Defense protocol initiated. Sector 1.');
@@ -782,6 +810,21 @@ const enemyStartY = () => isPortraitPlayfield()
         UI.syncMute();
     }
 
+    function rotateStorm() {
+        const changed = StormController.rotate(Game.state === STATE.PLAYING);
+        if (changed) {
+            const cx = W / 2, cy = Math.min(H * 0.42, Math.max(245, H * 0.35));
+            FX.ring(cx, cy, COLORS.cyan, 58, 0.24);
+            FX.burst(cx, cy, [COLORS.cyan, COLORS.magenta], 10, 30, 82, 1.8);
+        }
+        return changed;
+    }
+
+    function dismissTouchGuide() {
+        if (UI.els.touchGuide) UI.els.touchGuide.hidden = true;
+        Store.set(CONFIG.storage.touchGuide, '1');
+    }
+
     /* ======================================================================
        UI (DOM: HUD, màn hình kính mờ, banner)
        ====================================================================== */
@@ -798,17 +841,26 @@ const enemyStartY = () => isPortraitPlayfield()
                 banner: $('banner'), bannerTitle: $('banner-title'), bannerSub: $('banner-sub'),
                 announce: $('announce'),
                 muteBtn: $('btn-mute'), muteUse: $('mute-use'), pauseBtn: $('btn-pause'),
+                touchGuide: $('mobile-controls-hint'),
+                steerBtn: $('btn-steer'),
                 chips: {
                     combo: $('chip-combo'), rapid: $('chip-rapid'),
                     spread: $('chip-spread'), barrier: $('chip-barrier')
                 },
                 comboText: $('combo-text')
             };
+            this.els.touchGuide.hidden = Store.get(CONFIG.storage.touchGuide) === '1';
             $('btn-start').addEventListener('click', () => { Sound.init(); onEnter(); });
             $('btn-retry').addEventListener('click', () => { Sound.init(); onEnter(); });
             $('btn-resume').addEventListener('click', () => togglePause());
             this.els.pauseBtn.addEventListener('click', () => { Sound.init(); togglePause(); });
             this.els.muteBtn.addEventListener('click', toggleMute);
+            this.els.steerBtn.addEventListener('pointerdown', (event) => event.stopPropagation());
+            this.els.steerBtn.addEventListener('click', (event) => {
+                event.preventDefault();
+                event.stopPropagation();
+                rotateStorm();
+            });
             this.syncMute();
         },
 
@@ -859,6 +911,8 @@ const enemyStartY = () => isPortraitPlayfield()
             this.text('hi', e.hi, pad6(Game.hi));
             this.text('menuHi', e.menuHi, pad6(Game.hi));
             this.text('level', e.level, String(Game.level));
+            e.steerBtn.disabled = Game.state !== STATE.PLAYING ||
+                StormController.energy < CONFIG.magneticStorm.rotationEnergyCost;
 
             if (this.cache.lives !== Game.lives) {
                 this.cache.lives = Game.lives;
@@ -903,6 +957,7 @@ const enemyStartY = () => isPortraitPlayfield()
        UPDATE
        ====================================================================== */
     function updatePlaying(dt) {
+        StormController.update(dt);
         Player.update(dt);
         Player.updateBullets(dt);
         Formation.update(dt);

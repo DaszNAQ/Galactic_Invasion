@@ -5,17 +5,19 @@
 @media (pointer: coarse) {
     .hint, .keys, .btn kbd { display: none; }
     .mobile-instructions {
-        display: block;
+        display: grid;
+        gap: 4px;
         margin: 2.2cqw 0 0;
         padding-top: 1.8cqw;
         border-top: 1px solid rgba(70, 217, 232, 0.18);
-        color: var(--quantum-cyan);
+        color: var(--stellar-white);
         font-family: var(--font-mono);
         font-size: clamp(8px, 1.8cqw, 12px);
         font-weight: 700;
         letter-spacing: 0.12em;
     }
-    .mobile-instructions span { color: var(--cosmic-violet); padding: 0 0.45em; }
+    .mobile-instructions span { color: var(--quantum-cyan); }
+    .mobile-instructions span:last-child { color: var(--cosmic-violet); }
     .chip-autofire { display: flex; }
     #game { touch-action: none; }
 }

@@ -29,6 +29,20 @@ export const CONFIG = {
         baseMaxBullets: 3, maxBulletsCap: 6,
         aimChance: 0.35
     },
+    magneticStorm: {
+        radius: 226,
+        strength: 0.66,
+        fieldLineCount: 7,
+        particleCount: 38,
+        maxProjectileDeflection: 0.82,
+        directionStepDegrees: 45,
+        directionSmoothingRate: 5.5,
+        maxEnergy: 100,
+        initialEnergy: 100,
+        rotationEnergyCost: 15,
+        energyRegenPerSecond: 10,
+        activationCooldown: 0.18
+    },
     levels: [
         null,
         { rows: 5, cols: 11 }, { rows: 5, cols: 11 }, { rows: 5, cols: 11 },
@@ -54,7 +68,8 @@ export const CONFIG = {
     storage: {
         legacyHigh: 'galactic_invasion_highscore',
         scores: 'galactic_invasion_scores_v2',
-        mute: 'galactic_invasion_mute'
+        mute: 'galactic_invasion_mute',
+        touchGuide: 'galactic_invasion_touch_guide_dismissed'
     },
     topN: 5
 };

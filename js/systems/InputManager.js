@@ -1,5 +1,5 @@
 /* Keyboard input for desktop and one-finger drag input for touch devices. */
-export function createInput({ Sound, Game, STATE, onEnter, togglePause, toggleMute, getPlayer }) {
+export function createInput({ Sound, Game, STATE, onEnter, togglePause, toggleMute, steerStorm, getPlayer }) {
     const Input = {
         keys: new Set(),
         autoShoot: false,
@@ -43,6 +43,7 @@ export function createInput({ Sound, Game, STATE, onEnter, togglePause, toggleMu
                     if (e.code === 'Enter' || e.code === 'NumpadEnter') onEnter();
                     else if (e.code === 'KeyP' || e.code === 'Escape') togglePause();
                     else if (e.code === 'KeyM') toggleMute();
+                    else if (e.code === 'KeyE' && Game.state === STATE.PLAYING) steerStorm();
                 }
                 this.keys.add(e.code);
             });
